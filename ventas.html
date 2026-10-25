@@ -432,7 +432,7 @@ function prepararDia(fecha, d, clase){
     }
     filas.push({ k: k, n: limpiarNombre(r[0]), u: u, c: c, ex: cl !== null, mus: cl === 'mus' });
   });
-  return { fecha: fecha, centros: d.centros.slice(), comensales: Array.isArray(d.comensales) && d.comensales.length === nC ? d.comensales.map(function(x){ return +x || 0; }) : null, filas: filas, tot: tot, excl: ex, mus: mus, porCentro: porCentro, archivo: d.archivo || '', cargado: d.cargado || '' };
+  return { fecha: fecha, centros: d.centros.slice(), comensales: Array.isArray(d.comensales) && d.comensales.length === nC ? d.comensales.map(function(x){ return +x || 0; }) : null, tickets: Array.isArray(d.tickets) && d.tickets.length === nC ? d.tickets.map(function(x){ return +x || 0; }) : null, filas: filas, tot: tot, excl: ex, mus: mus, porCentro: porCentro, archivo: d.archivo || '', cargado: d.cargado || '' };
 }
 function crearModelo(shards, clasifRaw){
   var clasif = normalizarClasif(clasifRaw), dias = {}, centros = [];
@@ -801,7 +801,7 @@ return {
   ultimaFecha: ultimaFecha, primeraFecha: primeraFecha, cargados: cargados, resolverPeriodo: resolverPeriodo, periodoComparable: periodoComparable,
   serieDiaria: serieDiaria, mediaPorDiaSemana: mediaPorDiaSemana,
   historialPrecio: historialPrecio, perdidaHistorica: perdidaHistorica, baseProducto: baseProducto, productoPorDiaSemana: productoPorDiaSemana, simularLinea: simularLinea, simularConjunto: simularConjunto, tablaEscenarios: tablaEscenarios,
-  llamadaMin: llamadaMin, llamadaDudosa: llamadaDudosa, fmtLlamada: fmtLlamada, crearServicio: crearServicio, servicioPeriodo: servicioPeriodo, servicioSerie: servicioSerie, servicioPorDiaSemana: servicioPorDiaSemana, diasSinDatos: diasSinDatos, lectura: lectura, frenteA: frenteA
+  llamadaMin: llamadaMin, llamadaDudosa: llamadaDudosa, fmtLlamada: fmtLlamada, crearServicio: crearServicio, ventasSala: ventasSala, servicioPeriodo: servicioPeriodo, servicioSerie: servicioSerie, servicioPorDiaSemana: servicioPorDiaSemana, diasSinDatos: diasSinDatos, lectura: lectura, frenteA: frenteA
 };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = TOM;
@@ -1039,11 +1039,38 @@ function bloqueMusicos(a){
       return '<li><span class="nom">' + esc(bonito(p.n)) + '</span><span class="eur">' + T.fmtNum(p.u) + ' uds.</span><span class="det"><span>' + cs + '</span><span>' + (p.c ? T.fmtEur(p.c) : '') + '</span></span>' +
         '<div class="barra"><i style="width:' + Math.max(0, p.u) / mx * 100 + '%;background:#A39D87"></i></div></li>'; }).join('') + '</ul></section>';
 }
+/* Servicio en el Resumen: comensales, ticket medio (ventas ÷ tickets) y venta por comensal (Sala + Terraza ÷ comensales). Solo cuentan los días que traen cada dato. */
+function resumenServicio(m, fechas){
+  var r = { com: 0, diasCom: 0, ventasCom: 0, tk: 0, diasTk: 0, ventasTk: 0 };
+  (fechas || []).forEach(function(f){
+    var d = m.dias[f]; if (!d) return;
+    var sc = d.comensales ? d.comensales.reduce(function(x, y){ return x + y; }, 0) : 0, vs = T.ventasSala(d);
+    if (sc > 0){ r.com += sc; r.diasCom++; if (vs !== null) r.ventasCom += vs; }
+    var st = d.tickets ? d.tickets.reduce(function(x, y){ return x + y; }, 0) : 0;
+    if (st > 0){ r.tk += st; r.diasTk++; r.ventasTk += d.tot.c; }
+  });
+  r.ticketMedio = r.tk ? r.ventasTk / r.tk : null;
+  r.porComensal = r.com && r.ventasCom ? r.ventasCom / r.com : null;
+  return r;
+}
+function bloqueServicioResumen(per, comp, ac){
+  var m = S.m, s = resumenServicio(m, per.fechas);
+  if (!s.diasCom && !s.diasTk) return '';
+  var sc = ac && comp ? resumenServicio(m, comp.fechas) : null;
+  var dC = sc && sc.com > 0 && s.diasCom === sc.diasCom ? T.pctVar(s.com, sc.com) : null;
+  var dK = sc && sc.ticketMedio !== null && s.ticketMedio !== null ? T.pctVar(s.ticketMedio, sc.ticketMedio) : null;
+  var dP = sc && sc.porComensal !== null && s.porComensal !== null ? T.pctVar(s.porComensal, sc.porComensal) : null;
+  return '<section class="bloque"><h2>Servicio · ' + esc(per.etiqueta) + '</h2><p class="sub-txt">Ticket medio = ventas ÷ nº de tickets (todos los centros). Venta por comensal = ventas de Sala y Terraza ÷ comensales. Solo cuentan los días que traen cada dato.</p><div class="estadisticas">' +
+    kpiS('Comensales', s.diasCom ? T.fmtNum(s.com) : '—', dC, s.diasCom ? s.diasCom + ' ' + plural(s.diasCom, 'día', 'días') + ' con comensales' : 'sin comensales', per) +
+    kpiS('Ticket medio', s.ticketMedio !== null ? T.fmtEur(Math.round(s.ticketMedio)) : '—', dK, s.tk ? T.fmtNum(s.tk) + ' ' + plural(s.tk, 'ticket', 'tickets') : 'sin nº de tickets', per) +
+    kpiS('Venta por comensal', s.porComensal !== null ? T.fmtEur(Math.round(s.porComensal)) : '—', dP, s.porComensal !== null ? 'Sala y Terraza' : 'sin datos', per) +
+    '</div></section>';
+}
 function vistaResumen(){
   var m = S.m, per = T.resolverPeriodo(m, perState()), h = barraPeriodo();
   if (!per.fechas.length) return h + '<div class="vacio"><b>No hay datos en este periodo</b>Elige otro periodo con ventas cargadas.</div>';
   var a = T.agregar(m, per.fechas), comp = T.periodoComparable(m, per), ac = comp && comp.completo ? T.agregar(m, comp.fechas) : null;
-  return h + ticket(per, a, comp, ac) + '<div class="rejilla"><div>' + bloqueLectura(a, comp, per) + '</div>' +
+  return h + ticket(per, a, comp, ac) + bloqueServicioResumen(per, comp, ac) + '<div class="rejilla"><div>' + bloqueLectura(a, comp, per) + '</div>' +
     '<div class="rejilla dos">' + bloqueCentros(a) + bloqueCategorias(a) + '</div>' + bloqueTops(a) + bloqueMusicos(a) + '</div>';
 }
 
