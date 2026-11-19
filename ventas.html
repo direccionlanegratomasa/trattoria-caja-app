@@ -386,6 +386,21 @@ button{ cursor:pointer; }
 .cj-modal{ position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:60; display:flex; align-items:flex-start; justify-content:center; overflow-y:auto; padding:24px 12px; }
 .cj-modal-in{ background:var(--papel); border-radius:12px; padding:18px; max-width:760px; width:100%; }
 .acceso .cj-caja-enl{ margin-top:28px; padding-top:16px; border-top:1.5px solid var(--linea); }
+/* Cuadre de caja */
+.cd-nav{ display:flex; gap:8px; align-items:center; }
+.cd-nav .sel{ flex:1; min-width:0; }
+.cd-estado{ margin-top:12px; display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
+.cd-chip{ display:inline-block; font-size:13px; font-weight:700; padding:3px 9px; border-radius:999px; white-space:nowrap; }
+.cd-ok{ background:var(--sube-bg); color:var(--sube); }
+.cd-mal{ background:var(--baja-bg); color:var(--baja); }
+.cd-gris{ background:var(--pista); color:var(--suave); }
+.cj-tabla td.cd-rojo{ color:var(--baja); font-weight:700; }
+.cj-tabla td.cd-verde{ color:var(--sube); }
+.cd-fila{ cursor:pointer; }
+.cd-fila:hover td{ background:var(--papel); }
+.cd-fila[aria-current="true"] td{ background:var(--amarillo-claro); font-weight:700; }
+.cd-quien{ font-size:14px; color:var(--suave); margin-bottom:14px; }
+.cd-mes{ width:auto; }
 </style>
 </head>
 <body>
@@ -1200,6 +1215,199 @@ return { montar: montar, acceso: acceso, soloCaja: soloCaja, sesion: sesionCaja,
 </script>
 <script>
 /* ============================================================
+   Cuadre de caja automático · Trattoria Sant Arcangelo
+   Ventas y cobros de Ágora (cada mañana, 06:20) frente a los cierres de caja de los encargados.
+   Solo Jose, Jorge y Laura: además de la contraseña de los socios, nombre + código del cuadre.
+   El código no está en esta página: lo comprueba el servicio (acción «cuadre»).
+   ============================================================ */
+window.CUADRE = (function(){
+'use strict';
+var SES_CD = 'trattoria_cuadre_v1', PERSONAS = ['Jose', 'Jorge', 'Laura'], TOLERANCIA = 100;   // céntimos: hasta 1 € se considera cuadrado
+var D = { raiz: null, token: '', ses: null, datos: null, dia: '', cargando: false, msg: null, rellenando: false };
+
+function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){ return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+function eur(c){ return ((Number(c) || 0) / 100).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €'; }
+function difTxt(c){ return (c > 0 ? '+' : c < 0 ? '−' : '') + eur(Math.abs(c)); }
+function norm(t){ return String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim(); }
+var DS = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'], MS = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+function fLarga(iso){ var p = iso.split('-'), d = new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); return DS[d.getUTCDay()] + ' ' + (+p[2]) + ' de ' + MS[+p[1] - 1] + ' ' + p[0]; }
+function fCorta(iso){ var p = iso.split('-'), d = new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); return DS[d.getUTCDay()] + ' ' + p[2] + '/' + p[1]; }
+function mesTxt(m){ var p = m.split('-'); return MS[+p[1] - 1].charAt(0).toUpperCase() + MS[+p[1] - 1].slice(1) + ' ' + p[0]; }
+function leerSes(){ try { var s = JSON.parse(localStorage.getItem(SES_CD) || 'null'); return s && s.cuadre && Date.parse(s.expira) > Date.now() ? s : null; } catch (e){ return null; } }
+function ponerSes(s){ try { if (s) localStorage.setItem(SES_CD, JSON.stringify(s)); else localStorage.removeItem(SES_CD); } catch (e){} }
+async function pedir(op, extra){ return API.accion('cuadre', Object.assign({ op: op, cuadre: D.ses ? D.ses.cuadre : '' }, extra || {}), D.token); }
+
+/* ---------- Cálculo de la conciliación (por jornada) ---------- */
+function esEfectivo(m){ var n = norm(m); return n.indexOf('efectivo') >= 0 || n === 'cash' || n === 'contado'; }
+function formaDe(m, formas){
+  if (esEfectivo(m)) return 'Efectivo';
+  var n = norm(m);
+  for (var i = 0; i < formas.length; i++){ var k = norm(formas[i]); if (n === k || n.indexOf(k) === 0 || k.indexOf(n) === 0) return formas[i]; }
+  return null;
+}
+function etiqueta(k){ return k === 'UBER' ? 'Uber' : k === 'GLOVO' ? 'Glovo' : k === 'TRANSFERENCIA' ? 'Transferencia' : k; }
+function jornada(dia){
+  var x = D.datos, ag = x.dias[dia] || null, cs = x.cierres[dia] || [], formas = x.formasCierre || ['Tarjeta', 'UBER', 'GLOVO', 'TRANSFERENCIA'];
+  var filas = [{ k: 'Efectivo', ag: 0, ci: 0 }].concat(formas.map(function(f){ return { k: f, ag: 0, ci: 0 }; })), por = {};
+  filas.forEach(function(f){ por[f.k] = f; });
+  if (ag) Object.keys(ag.total.c).forEach(function(m){
+    var k = formaDe(m, formas);
+    if (k) por[k].ag += ag.total.c[m];
+    else { var f = por['ag:' + m] = { k: m, ag: ag.total.c[m], ci: 0, soloAgora: true }; filas.push(f); }
+  });
+  cs.forEach(function(c){ por.Efectivo.ci += c.rec; formas.forEach(function(f){ por[f].ci += (c.formas || {})[f] || 0; }); });
+  var tAg = 0, tCi = 0; filas.forEach(function(f){ f.dif = f.ci - f.ag; tAg += f.ag; tCi += f.ci; });
+  var estado = !ag ? 'sinagora' : !cs.length ? 'sincierre' : Math.abs(tCi - tAg) > TOLERANCIA || filas.some(function(f){ return Math.abs(f.dif) > TOLERANCIA; }) ? 'descuadre' : 'ok';
+  return { dia: dia, ag: ag, cierres: cs, filas: filas.filter(function(f){ return f.ag || f.ci || f.k === 'Efectivo' || f.k === 'Tarjeta'; }), tAg: tAg, tCi: tCi, dif: tCi - tAg, estado: estado };
+}
+var ESTADOS = { ok: ['Cuadra', 'cd-ok'], descuadre: ['Descuadre', 'cd-mal'], sincierre: ['Falta el cierre', 'cd-mal'], sinagora: ['Sin datos de Ágora', 'cd-gris'] };
+function chip(e){ var s = ESTADOS[e]; return '<span class="cd-chip ' + s[1] + '">' + s[0] + '</span>'; }
+function difCelda(c){ return '<td class="n ' + (Math.abs(c) > TOLERANCIA ? 'cd-rojo' : 'cd-verde') + '">' + difTxt(c) + '</td>'; }
+function jornadas(){
+  var set = {};
+  Object.keys(D.datos.dias).forEach(function(d){ set[d] = 1; });
+  Object.keys(D.datos.cierres).forEach(function(d){ if (d >= '2026-10-24') set[d] = 1; });
+  return Object.keys(set).sort();
+}
+
+/* ---------- Vistas ---------- */
+function vistaAcceso(err){
+  return '<section class="bloque acceso"><h2>Cuadre de caja</h2><p class="sub-txt">Apartado reservado a Jose, Jorge y Laura. Elige tu nombre y escribe el código del cuadre.</p>' +
+    (err ? '<div class="aviso err" role="alert">' + esc(err) + '</div>' : '') +
+    '<label for="cd-n">Tu nombre</label><select class="sel" id="cd-n"><option value="">Elige tu nombre</option>' + PERSONAS.map(function(p){ return '<option>' + p + '</option>'; }).join('') + '</select>' +
+    '<label for="cd-c" style="margin-top:12px">Código del cuadre</label><input class="campo" id="cd-c" type="password" inputmode="numeric" maxlength="8" autocomplete="off">' +
+    '<p style="margin-top:14px"><button type="button" class="btn" data-cd="entrar">Entrar</button></p></section>';
+}
+function vistaDia(j){
+  var h = '<section class="bloque"><div class="cd-nav"><button type="button" class="flecha" data-cd="mover" data-v="-1" aria-label="Día anterior"' + (j.prev ? '' : ' disabled') + '>‹</button>' +
+    '<select class="sel" data-cdf="dia" aria-label="Jornada">' + jornadas().slice().reverse().map(function(d){ return '<option value="' + d + '"' + (d === j.dia ? ' selected' : '') + '>' + fLarga(d) + '</option>'; }).join('') + '</select>' +
+    '<button type="button" class="flecha" data-cd="mover" data-v="1" aria-label="Día siguiente"' + (j.next ? '' : ' disabled') + '>›</button></div>' +
+    '<p class="cd-estado">' + chip(j.estado) + (j.ag && j.cierres.length ? ' <span class="sub-txt">Diferencia total: <b>' + difTxt(j.dif) + '</b></span>' : '') + '</p></section>';
+  // Conciliación
+  h += '<section class="bloque"><h2>Ágora frente al cierre de caja</h2>';
+  if (!j.ag) h += '<div class="aviso warn">Todavía no están los datos de Ágora de esta jornada. Se cargan solos cada mañana sobre las 06:20.</div>';
+  if (!j.cierres.length) h += '<div class="aviso err"><b>No hay cierre de caja de esta jornada.</b> El cierre es obligatorio todos los días.</div>';
+  h += '<div class="cj-scroll"><table class="cj-tabla"><thead><tr><th>Forma de pago</th><th class="n">Ágora</th><th class="n">Cierre de caja</th><th class="n">Diferencia</th></tr></thead><tbody>' +
+    j.filas.map(function(f){ return '<tr><td>' + esc(etiqueta(f.k)) + (f.soloAgora ? ' <small>(no está en el cierre)</small>' : '') + '</td><td class="n">' + eur(f.ag) + '</td><td class="n">' + (f.soloAgora ? '—' : eur(f.ci)) + '</td>' + difCelda(f.dif) + '</tr>'; }).join('') +
+    '<tr class="total"><td>Total</td><td class="n">' + eur(j.tAg) + '</td><td class="n">' + eur(j.tCi) + '</td>' + difCelda(j.dif) + '</tr></tbody></table></div>' +
+    '<p class="sub-txt" style="margin-top:8px">Diferencia = cierre de caja − Ágora. En positivo, hay más dinero en el cierre que cobrado en Ágora; en negativo, falta. El efectivo del cierre es la recaudación (contado + gastos + retiros).</p></section>';
+  // Ventas de Ágora por centro
+  if (j.ag){
+    var ks = Object.keys(j.ag.centros), cob = function(x){ return Object.keys(x.c).reduce(function(s, m){ return s + x.c[m]; }, 0); };
+    var tc = cob(j.ag.total);
+    h += '<section class="bloque"><h2>Ventas en Ágora</h2><div class="cj-scroll"><table class="cj-tabla"><thead><tr><th>Centro</th><th class="n">Tickets</th><th class="n">Ventas</th><th class="n">Cobrado</th></tr></thead><tbody>' +
+      ks.map(function(k){ var x = j.ag.centros[k]; return '<tr><td>' + esc(k) + '</td><td class="n">' + x.t + '</td><td class="n">' + eur(x.v) + '</td><td class="n">' + eur(cob(x)) + '</td></tr>'; }).join('') +
+      '<tr class="total"><td>Total</td><td class="n">' + j.ag.total.t + '</td><td class="n">' + eur(j.ag.total.v) + '</td><td class="n">' + eur(tc) + '</td></tr></tbody></table></div>' +
+      (Math.abs(tc - j.ag.total.v) > TOLERANCIA ? '<div class="aviso warn" style="margin-top:10px">En Ágora, lo cobrado (' + eur(tc) + ') no coincide con las ventas (' + eur(j.ag.total.v) + '): diferencia ' + difTxt(tc - j.ag.total.v) + '. Puede haber tickets sin cobrar, propinas o invitaciones.</div>' : '') +
+      (j.ag.cerrada ? '' : '<p class="sub-txt" style="margin-top:8px">Ojo: cuando se guardó, la jornada no estaba cerrada en Ágora.</p>') + '</section>';
+  }
+  // Cierres de los encargados
+  if (j.cierres.length){
+    var fm = D.datos.formasCierre || [];
+    h += '<section class="bloque"><h2>Cierres de caja de la jornada</h2><div class="cj-scroll"><table class="cj-tabla"><thead><tr><th>Turno</th><th>Encargado</th><th>Guardado</th><th class="n">Efectivo</th>' + fm.map(function(k){ return '<th class="n">' + esc(etiqueta(k)) + '</th>'; }).join('') + '<th class="n">Total</th></tr></thead><tbody>' +
+      j.cierres.map(function(c){ var t = c.rec + fm.reduce(function(s, k){ return s + ((c.formas || {})[k] || 0); }, 0);
+        return '<tr><td>' + esc(c.turno) + (c.dud ? ' <small>(fecha escrita: ' + esc(c.dud.split('-').reverse().join('/')) + ')</small>' : '') + '</td><td>' + esc(c.emp) + '</td><td>' + esc(c.hora) + '</td><td class="n">' + eur(c.rec) + '</td>' + fm.map(function(k){ return '<td class="n">' + eur((c.formas || {})[k] || 0) + '</td>'; }).join('') + '<td class="n"><b>' + eur(t) + '</b></td></tr>'; }).join('') +
+      '</tbody></table></div><p class="sub-txt" style="margin-top:8px">El detalle de cada cierre (arqueo, gastos, retiros y fotos) está en «Cierre de caja → Historial».</p></section>';
+  }
+  return h;
+}
+function vistaMes(mes){
+  var dias = jornadas().filter(function(d){ return d.slice(0, 7) === mes; }), js = dias.map(jornada), tot = { ag: 0, ci: 0, dif: 0 };
+  var meses = {}; jornadas().forEach(function(d){ meses[d.slice(0, 7)] = 1; });
+  var cuenta = { ok: 0, descuadre: 0, sincierre: 0, sinagora: 0 }; js.forEach(function(j){ cuenta[j.estado]++; tot.ag += j.tAg; tot.ci += j.tCi; if (j.ag && j.cierres.length) tot.dif += j.dif; });
+  var h = '<section class="bloque"><div class="bloque-cab"><h2>Resumen del mes</h2><select class="sel cd-mes" data-cdf="mes" aria-label="Mes">' + Object.keys(meses).sort().reverse().map(function(m){ return '<option value="' + m + '"' + (m === mes ? ' selected' : '') + '>' + mesTxt(m) + '</option>'; }).join('') + '</select></div>' +
+    '<p class="sub-txt">' + cuenta.ok + ' cuadran · ' + cuenta.descuadre + ' con descuadre · ' + cuenta.sincierre + ' sin cierre de caja' + (cuenta.sinagora ? ' · ' + cuenta.sinagora + ' sin datos de Ágora' : '') + '</p>' +
+    '<div class="cj-scroll"><table class="cj-tabla cd-mesT"><thead><tr><th>Día</th><th class="n">Ventas</th><th class="n">Cobrado Ágora</th><th class="n">Cierre de caja</th><th class="n">Diferencia</th><th>Estado</th></tr></thead><tbody>' +
+    js.slice().reverse().map(function(j){ return '<tr class="cd-fila" data-cd="ir" data-v="' + j.dia + '"' + (j.dia === D.dia ? ' aria-current="true"' : '') + '><td>' + fCorta(j.dia) + '</td><td class="n">' + (j.ag ? eur(j.ag.total.v) : '—') + '</td><td class="n">' + (j.ag ? eur(j.tAg) : '—') + '</td><td class="n">' + (j.cierres.length ? eur(j.tCi) : '—') + '</td>' + (j.ag && j.cierres.length ? difCelda(j.dif) : '<td class="n">—</td>') + '<td>' + chip(j.estado) + '</td></tr>'; }).join('') +
+    '<tr class="total"><td>Total</td><td></td><td class="n">' + eur(tot.ag) + '</td><td class="n">' + eur(tot.ci) + '</td>' + difCelda(tot.dif) + '<td><small>días con los dos datos</small></td></tr></tbody></table></div>' +
+    '<p class="cj-botones" style="margin-top:12px"><button type="button" class="btn claro peq" data-cd="csv" data-v="' + mes + '">Descargar CSV del mes</button></p></section>';
+  return h;
+}
+function pintar(){
+  var r = D.raiz; if (!r) return;
+  if (!D.ses){ r.innerHTML = vistaAcceso(D.msg && D.msg.err); var c = document.getElementById('cd-c'); if (c) c.onkeydown = function(e){ if (e.key === 'Enter') entrar(); }; return; }
+  var cab = '<p class="cd-quien">Cuadre de caja · <b>' + esc(D.ses.nombre) + '</b> · <button type="button" class="enlace" data-cd="salir">Salir del cuadre</button></p>';
+  if (D.cargando){ r.innerHTML = cab + '<div class="carga" role="status"><b>Cargando el cuadre…</b></div>'; return; }
+  var h = cab + (D.msg && D.msg.err ? '<div class="aviso err">' + esc(D.msg.err) + '</div>' : '') + (D.msg && D.msg.ok ? '<div class="aviso ok">' + esc(D.msg.ok) + '</div>' : '');
+  if (!D.datos){ r.innerHTML = h + '<button type="button" class="btn" data-cd="recargar">Reintentar</button>'; return; }
+  var lista = jornadas();
+  if (D.datos.avisoCierres) h += '<div class="aviso warn">' + esc(D.datos.avisoCierres) + '</div>';
+  if (!lista.length) h += '<section class="bloque"><div class="aviso info">Todavía no hay ningún día en el cuadre.</div></section>';
+  else {
+    if (!D.dia || lista.indexOf(D.dia) < 0) D.dia = lista[lista.length - 1];
+    var i = lista.indexOf(D.dia), j = jornada(D.dia); j.prev = i > 0; j.next = i < lista.length - 1;
+    h += vistaDia(j) + vistaMes(D.mes && D.mes.length === 7 ? D.mes : D.dia.slice(0, 7));
+  }
+  h += '<section class="bloque"><h2>Datos</h2><ul class="notas"><li>Ágora se lee cada mañana sobre las 06:20 (jornada anterior). Se considera cuadrado hasta 1 € de diferencia.</li>' +
+    '<li>Jornada de un cierre: su fecha; si se guardó antes de las 12:00 de ese día, cuenta para la jornada anterior.</li>' +
+    (D.datos.actualizado ? '<li>Última actualización: ' + esc(D.datos.actualizado.slice(0, 10).split('-').reverse().join('/') + ' ' + D.datos.actualizado.slice(11, 16)) + ' (UTC)</li>' : '') +
+    (D.datos.reloj ? '' : '<li><b>La carga diaria automática todavía no está programada.</b> Pulsa «Cargar días que faltan» y quedará programada.</li>') + '</ul>' +
+    '<p class="cj-botones" style="margin-top:12px"><button type="button" class="btn claro peq" data-cd="rellenar"' + (D.rellenando ? ' disabled' : '') + '>' + (D.rellenando ? 'Cargando días de Ágora…' : 'Cargar días que faltan') + '</button></p></section>';
+  r.innerHTML = h;
+}
+
+/* ---------- Acciones ---------- */
+async function entrar(){
+  var n = (document.getElementById('cd-n') || {}).value || '', c = ((document.getElementById('cd-c') || {}).value || '').trim();
+  if (!n || !c){ D.msg = { err: 'Elige tu nombre y escribe el código del cuadre.' }; return pintar(); }
+  var b = D.raiz.querySelector('[data-cd="entrar"]'); if (b) b.disabled = true;
+  try { var r = await API.accion('cuadre', { op: 'login', nombre: n, codigo: c }, D.token); D.ses = { nombre: r.nombre, cuadre: r.cuadre, expira: r.expira }; ponerSes(D.ses); D.msg = null; cargar(); }
+  catch (e){ D.msg = { err: e.message }; pintar(); }
+}
+async function cargar(){
+  D.cargando = true; pintar();
+  try { D.datos = await pedir('leer'); D.msg = null; }
+  catch (e){ if (e.codigo === 'CUADRE'){ salir(e.message); return; } D.msg = { err: e.message }; }
+  D.cargando = false; pintar();
+}
+function salir(msg){ ponerSes(null); D.ses = null; D.datos = null; D.msg = msg ? { err: msg } : null; pintar(); }
+async function rellenar(){
+  D.rellenando = true; pintar();
+  try { var r = await pedir('rellenar'); D.msg = { ok: r.hechos ? 'Cargados ' + r.hechos + ' días de Ágora.' + (r.pendientes ? ' Faltan ' + r.pendientes + ': vuelve a pulsar el botón.' : '') : (r.pendientes ? 'No se ha podido cargar ningún día todavía. Vuelve a intentarlo.' : 'No faltaba ningún día.') }; D.rellenando = false; var m = D.msg; await cargar(); D.msg = m; pintar(); return; }
+  catch (e){ D.msg = { err: e.message }; }
+  D.rellenando = false; pintar();
+}
+function csv(mes){
+  var fm = D.datos.formasCierre || [], q = function(v){ return (Number(v || 0) / 100).toFixed(2).replace('.', ','); };
+  var lin = [['Jornada', 'Estado', 'Ventas Ágora', 'Cobrado Ágora', 'Cierre de caja', 'Diferencia', 'Efectivo Ágora', 'Efectivo cierre'].concat(fm.map(function(k){ return etiqueta(k) + ' Ágora'; }), fm.map(function(k){ return etiqueta(k) + ' cierre'; }), ['Cierres']).join(';')];
+  jornadas().filter(function(d){ return d.slice(0, 7) === mes; }).forEach(function(d){
+    var j = jornada(d), f = {}; j.filas.forEach(function(x){ f[x.k] = x; });
+    var g = function(k, c){ return q(f[k] ? f[k][c] : 0); };
+    lin.push([d.split('-').reverse().join('/'), ESTADOS[j.estado][0], j.ag ? q(j.ag.total.v) : '', q(j.tAg), q(j.tCi), q(j.dif), g('Efectivo', 'ag'), g('Efectivo', 'ci')]
+      .concat(fm.map(function(k){ return g(k, 'ag'); }), fm.map(function(k){ return g(k, 'ci'); }), [j.cierres.map(function(c){ return c.turno + ' ' + c.emp; }).join(' / ')]).join(';'));
+  });
+  var b = new Blob(['﻿' + lin.join('\r\n')], { type: 'text/csv;charset=utf-8' }), a = document.createElement('a');
+  a.href = URL.createObjectURL(b); a.download = 'cuadre_trattoria_' + mes + '.csv'; document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 500);
+}
+function alClic(ev){
+  var b = ev.target.closest ? ev.target.closest('[data-cd]') : null; if (!b || b.disabled || !D.raiz.contains(b)) return;
+  var a = b.dataset.cd, v = b.dataset.v;
+  if (a === 'entrar') return entrar();
+  if (a === 'salir') return salir();
+  if (a === 'recargar') return cargar();
+  if (a === 'rellenar') return rellenar();
+  if (a === 'csv') return csv(v);
+  if (a === 'mover'){ var l = jornadas(), i = l.indexOf(D.dia) + Number(v); if (i >= 0 && i < l.length){ D.dia = l[i]; D.mes = D.dia.slice(0, 7); } pintar(); return; }
+  if (a === 'ir'){ D.dia = v; pintar(); window.scrollTo(0, 0); return; }
+}
+function alCambiar(ev){
+  var t = ev.target, f = t.dataset && t.dataset.cdf; if (!f) return;
+  if (f === 'dia'){ D.dia = t.value; D.mes = D.dia.slice(0, 7); }
+  if (f === 'mes'){ D.mes = t.value; }
+  pintar();
+}
+function montar(raiz, token){
+  D.raiz = raiz; D.token = token; D.ses = leerSes(); D.msg = null;
+  raiz.onclick = alClic; raiz.onchange = alCambiar;
+  if (D.ses && !D.datos) return cargar();
+  pintar();
+}
+function olvidar(){ ponerSes(null); D.ses = null; D.datos = null; }
+return { montar: montar, olvidar: olvidar };
+})();
+</script>
+<script>
+/* ============================================================
    Panel de socios · Ventas Trattoria Sant Arcangelo (solo lectura)
    ============================================================ */
 (function(){
@@ -1879,6 +2087,7 @@ function vistaDatos(){
 function vistaVacia(){ return '<div class="vacio"><b>Todavía no hay ventas cargadas</b>Cuando se cargue el primer día, aparecerá aquí el resumen.</div>'; }
 function pintarPag(){
   var m = S.m, el = document.getElementById('pag'); if (!el) return;
+  if (S.tab === 'cuadre'){ el.innerHTML = '<div id="cuadre-raiz"></div>'; Array.prototype.forEach.call(document.querySelectorAll('.tab'), function(b){ b.setAttribute('aria-selected', String(b.dataset.v === S.tab)); }); window.CUADRE.montar(document.getElementById('cuadre-raiz'), S.ses.token); return; }
   if (S.tab === 'caja'){ el.innerHTML = '<div id="caja-raiz"></div>'; Array.prototype.forEach.call(document.querySelectorAll('.tab'), function(b){ b.setAttribute('aria-selected', String(b.dataset.v === S.tab)); }); window.CAJA.montar(document.getElementById('caja-raiz'), S.ses.token); return; }
   el.innerHTML = !m.fechas.length ? vistaVacia() : (S.tab === 'resumen' ? vistaResumen() : S.tab === 'evolucion' ? vistaEvolucion() : S.tab === 'productos' ? vistaProductos() : S.tab === 'entradas' ? vistaEntradas() : S.tab === 'servicio' ? vistaServicio() : S.tab === 'simulaciones' ? vistaSimulaciones() : vistaDatos());
   Array.prototype.forEach.call(document.querySelectorAll('.tab'), function(b){ b.setAttribute('aria-selected', String(b.dataset.v === S.tab)); });
@@ -1890,7 +2099,7 @@ function armarMarco(){
   var m = S.m, ult = T.ultimaFecha(m);
   app.innerHTML = '<header class="cab"><div class="cab-in">' + MARCA + '' +
     '<div class="cab-txt"><b>Ventas · panel de socios</b><small>' + (ult ? 'Datos hasta el ' + T.fmtFechaLarga(ult) : 'Sin datos todavía') + ' · <button type="button" class="enlace" data-act="salir">Salir</button></small></div></div></header>' +
-    '<nav class="tabs" aria-label="Secciones"><div class="tabs-in" role="tablist">' + [['resumen', 'Resumen'], ['evolucion', 'Evolución'], ['productos', 'Productos'], ['servicio', 'Comensales'], ['simulaciones', 'Simulaciones'], ['caja', 'Cierre de caja'], ['datos', 'Datos']].map(function(t){
+    '<nav class="tabs" aria-label="Secciones"><div class="tabs-in" role="tablist">' + [['resumen', 'Resumen'], ['evolucion', 'Evolución'], ['productos', 'Productos'], ['servicio', 'Comensales'], ['simulaciones', 'Simulaciones'], ['caja', 'Cierre de caja'], ['cuadre', 'Cuadre de caja'], ['datos', 'Datos']].map(function(t){
       return '<button type="button" role="tab" class="tab" data-act="tab" data-v="' + t[0] + '" aria-selected="' + (S.tab === t[0]) + '">' + t[1] + '</button>'; }).join('') + '</div></nav><main class="pag" id="pag"></main>';
   pintarPag();
 }
@@ -1954,7 +2163,7 @@ function actuar(act, v, k){
     case 'reintentar': iniciar(); return;
     case 'entrar': entrar(); return;
     case 'caja-acceso': window.CAJA.acceso(app); return;
-    case 'salir': limpiarSes(); S.m = null; S.mV = null; S.mS = null; S.tab = 'resumen'; S.sim = { vent: 90, q: '', items: [], perd: 10, hist: {}, dias: [true, true, true, true, true, true, true], ayuda: true }; pintarAcceso(); return;
+    case 'salir': limpiarSes(); if (window.CUADRE) window.CUADRE.olvidar(); S.m = null; S.mV = null; S.mS = null; S.tab = 'resumen'; S.sim = { vent: 90, q: '', items: [], perd: 10, hist: {}, dias: [true, true, true, true, true, true, true], ayuda: true }; pintarAcceso(); return;
     default: if (act.indexOf('sim-') === 0 && simAccion(act, v, k) !== false) break; return;
   }
   pintarPag(); window.scrollTo(0, antes);
