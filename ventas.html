@@ -915,6 +915,74 @@ return { ventas: ventas, accion: accion, sinConfigurar: sinConfigurar, url: URL_
 </script>
 <script>
 /* ============================================================
+   XLSX · genera un Excel (.xlsx) de verdad en el navegador, sin librerías.
+   XLSX.descargar(archivo, hoja, filas, { anchos, totales })
+     filas: [cabecera, fila, fila…]; números → celda numérica en euros, texto → texto.
+     Cabecera en negrita; si opciones.totales, la última fila también en negrita.
+   ============================================================ */
+window.XLSX = (function(){
+'use strict';
+var CRC = (function(){ var t = [], c; for (var n = 0; n < 256; n++){ c = n; for (var k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(b){ var c = 0xFFFFFFFF; for (var i = 0; i < b.length; i++) c = CRC[(c ^ b[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+function zip(archivos){                                   // ZIP sin comprimir (método 0): Excel lo abre sin problema
+  var enc = new TextEncoder(), partes = [], central = [], off = 0;
+  var u16 = function(v){ return [v & 255, (v >>> 8) & 255]; }, u32 = function(v){ return [v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255]; };
+  archivos.forEach(function(f){
+    var nom = enc.encode(f[0]), dat = enc.encode(f[1]), crc = crc32(dat);
+    var comun = [].concat(u16(20), u16(0x0800), u16(0), u16(0), u16(0x21), u32(crc), u32(dat.length), u32(dat.length), u16(nom.length), u16(0));
+    var loc = new Uint8Array([].concat(u32(0x04034b50), comun)); partes.push(loc, nom, dat);
+    central.push(new Uint8Array([].concat(u32(0x02014b50), u16(20), comun, u16(0), u16(0), u16(0), u32(0), u32(off))), nom);
+    off += loc.length + nom.length + dat.length;
+  });
+  var tam = central.reduce(function(s, p){ return s + p.length; }, 0);
+  var fin = new Uint8Array([].concat(u32(0x06054b50), u16(0), u16(0), u16(archivos.length), u16(archivos.length), u32(tam), u32(off), u16(0)));
+  return new Blob(partes.concat(central, [fin]), { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+}
+function x(s){ return String(s).replace(/[&<>"]/g, function(c){ return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, ''); }
+function col(i){ var s = ''; i++; while (i > 0){ var m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; }
+function libro(hoja, filas, op){
+  op = op || {};
+  var nc = filas.reduce(function(m, f){ return Math.max(m, f.length); }, 0), anchos = [];
+  for (var c = 0; c < nc; c++) anchos[c] = (op.anchos && op.anchos[c]) || Math.min(45, Math.max(10, filas.reduce(function(m, f){ var v = f[c]; return Math.max(m, v == null ? 0 : (typeof v === 'number' ? 12 : String(v).length + 2)); }, 0)));
+  var xmlFilas = filas.map(function(f, r){
+    var negrita = r === 0 || (op.totales && r === filas.length - 1);
+    return '<row r="' + (r + 1) + '">' + f.map(function(v, c){
+      if (v == null || v === '') return '';
+      var ref = col(c) + (r + 1);
+      if (typeof v === 'number' && isFinite(v)) return '<c r="' + ref + '" s="' + (negrita ? 3 : 2) + '"><v>' + v + '</v></c>';
+      return '<c r="' + ref + '" t="inlineStr" s="' + (negrita ? 1 : 0) + '"><is><t xml:space="preserve">' + x(v) + '</t></is></c>';
+    }).join('') + '</row>';
+  }).join('');
+  var hojaXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+    '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>' +
+    '<cols>' + anchos.map(function(w, i){ return '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + w + '" customWidth="1"/>'; }).join('') + '</cols>' +
+    '<sheetData>' + xmlFilas + '</sheetData>' + (filas.length > 1 ? '<autoFilter ref="A1:' + col(nc - 1) + (op.totales ? filas.length - 1 : filas.length) + '"/>' : '') + '</worksheet>';
+  var estilos = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+    '<numFmts count="1"><numFmt numFmtId="164" formatCode="#,##0.00\\ &quot;€&quot;;[Red]\\-#,##0.00\\ &quot;€&quot;"/></numFmts>' +
+    '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>' +
+    '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>' +
+    '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+    '<cellXfs count="4"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +
+    '<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="164" fontId="1" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
+  var nombreHoja = x(String(hoja || 'Hoja1').replace(/[\\\/\?\*\[\]:]/g, ' ').slice(0, 31));
+  return zip([
+    ['[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>'],
+    ['_rels/.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'],
+    ['xl/workbook.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="' + nombreHoja + '" sheetId="1" r:id="rId1"/></sheets></workbook>'],
+    ['xl/_rels/workbook.xml.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'],
+    ['xl/worksheets/sheet1.xml', hojaXml],
+    ['xl/styles.xml', estilos]
+  ]);
+}
+function descargar(archivo, hoja, filas, op){
+  var a = document.createElement('a'); a.href = URL.createObjectURL(libro(hoja, filas, op)); a.download = archivo;
+  document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+return { libro: libro, descargar: descargar };
+})();
+</script>
+<script>
+/* ============================================================
    Cierre de caja · Trattoria Sant Arcangelo
    Réplica del cierre de La Negra Tomasa con las formas de pago de la Trattoria en Ágora.
    Todo pasa por el servicio (acción «caja»): en esta página no hay ninguna clave.
@@ -1042,7 +1110,7 @@ function vistaHistorial(){
   var l = C.lista.cierres.filter(function(x){ return x.fecha.slice(0, 7) === C.mes; }), fm = C.lista.formas || C.cfg.formas;
   var t = { rec: 0, total: 0, f: {} }; l.forEach(function(x){ t.rec += x.recaudacion; t.total += x.total; fm.forEach(function(k){ t.f[k] = (t.f[k] || 0) + ((x.formas || {})[k] || 0); }); });
   var h = '<section class="bloque"><div class="bloque-cab"><h2>Historial de cierres</h2><div class="cj-botones"><select class="sel" data-cjf="mes" aria-label="Mes">' + ms.map(function(m){ var p = m.split('-'); return '<option value="' + m + '"' + (m === C.mes ? ' selected' : '') + '>' + ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'][+p[1] - 1] + ' ' + p[0] + '</option>'; }).join('') + '</select>' +
-    '<button type="button" class="btn claro peq" data-cj="csv"' + (l.length ? '' : ' disabled') + '>Descargar Excel (CSV)</button><button type="button" class="btn claro peq" data-cj="recargar">Actualizar</button></div></div>';
+    '<button type="button" class="btn claro peq" data-cj="csv"' + (l.length ? '' : ' disabled') + '>Descargar Excel</button><button type="button" class="btn claro peq" data-cj="recargar">Actualizar</button></div></div>';
   if (!l.length) return h + '<div class="vacio"><b>No hay cierres en este mes</b>Cuando un encargado guarde un cierre, aparecerá aquí.</div></section>';
   h += '<div class="cj-scroll"><table class="cj-tabla cj-hist"><thead><tr><th>Día</th><th>Turno</th><th>Encargado</th><th class="n">Efectivo</th>' + fm.map(function(k){ return '<th class="n">' + esc(k === 'Tarjeta' ? 'Tarjeta' : etiquetaForma(k)) + '</th>'; }).join('') + '<th class="n">Total</th><th></th></tr></thead><tbody>' +
     l.map(function(x){ return '<tr><td>' + esc(fechaTxt(x.fecha)) + '</td><td>' + esc(x.turno) + '</td><td>' + esc(x.empleado) + '</td><td class="n">' + eur(x.recaudacion) + '</td>' + fm.map(function(k){ return '<td class="n">' + eur((x.formas || {})[k]) + '</td>'; }).join('') + '<td class="n"><b>' + eur(x.total) + '</b></td><td><button type="button" class="btn claro peq" data-cj="ver" data-r="' + esc(x.ruta) + '">Ver</button></td></tr>'; }).join('') +
@@ -1107,11 +1175,15 @@ async function cargarLista(){ try { C.lista = await pedir('listar'); } catch (e)
 async function cargarEmp(){ try { var j = await pedir('empleados'); C.emp = j.empleados; C.cfg.empleados = j.empleados.map(function(e){ return e.n; }); } catch (e){ C.emp = []; fallo(e); return; } pintar(); }
 function csv(){
   var fm = C.lista.formas || C.cfg.formas, l = C.lista.cierres.filter(function(x){ return x.fecha.slice(0, 7) === C.mes; }).slice().reverse();
-  var q = function(v){ v = String(v == null ? '' : v); return /[;"\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }, n = function(v){ return (Number(v) || 0).toFixed(2).replace('.', ','); };
-  var lin = [['Fecha', 'Turno', 'Encargado', 'Efectivo contado', 'Gastos', 'Retiros', 'Recaudación efectivo'].concat(fm).concat(['Total del día', 'Fotos', 'Guardado']).join(';')];
-  l.forEach(function(x){ lin.push([fechaTxt(x.fecha), q(x.turno), q(x.empleado), n(x.efectivo), n(x.gastos), n(x.retiros), n(x.recaudacion)].concat(fm.map(function(k){ return n((x.formas || {})[k]); })).concat([n(x.total), x.fotos, q((x.guardado || '').slice(0, 16).replace('T', ' '))]).join(';')); });
-  var b = new Blob(['﻿' + lin.join('\r\n')], { type: 'text/csv;charset=utf-8' }), a = document.createElement('a');
-  a.href = URL.createObjectURL(b); a.download = 'cierres_trattoria_' + C.mes + '.csv'; document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  var n = function(v){ return Math.round((Number(v) || 0) * 100) / 100; }, tot = { ef: 0, ga: 0, re: 0, rc: 0, f: {}, t: 0 };
+  var filas = [['Fecha', 'Turno', 'Encargado', 'Efectivo contado', 'Gastos', 'Retiros', 'Recaudación efectivo'].concat(fm).concat(['Total del día', 'Fotos', 'Guardado'])];
+  l.forEach(function(x){
+    tot.ef += n(x.efectivo); tot.ga += n(x.gastos); tot.re += n(x.retiros); tot.rc += n(x.recaudacion); tot.t += n(x.total);
+    fm.forEach(function(k){ tot.f[k] = (tot.f[k] || 0) + n((x.formas || {})[k]); });
+    filas.push([fechaTxt(x.fecha), x.turno || '', x.empleado || '', n(x.efectivo), n(x.gastos), n(x.retiros), n(x.recaudacion)].concat(fm.map(function(k){ return n((x.formas || {})[k]); })).concat([n(x.total), String(x.fotos || 0), (x.guardado || '').slice(0, 16).replace('T', ' ')]));
+  });
+  filas.push(['Total', '', '', n(tot.ef), n(tot.ga), n(tot.re), n(tot.rc)].concat(fm.map(function(k){ return n(tot.f[k]); })).concat([n(tot.t), '', '']));
+  XLSX.descargar('cierres_trattoria_' + C.mes + '.xlsx', 'Cierres ' + C.mes, filas, { totales: true });
 }
 async function clic(b){
   var a = b.dataset.cj, f = C.f;
@@ -1320,7 +1392,7 @@ function vistaMes(mes){
     '<div class="cj-scroll"><table class="cj-tabla cd-mesT"><thead><tr><th>Día</th><th class="n">Ventas</th><th class="n">Cobrado Ágora</th><th class="n">Cierre de caja</th><th class="n">Diferencia</th><th>Estado</th></tr></thead><tbody>' +
     js.slice().reverse().map(function(j){ return '<tr class="cd-fila" data-cd="ir" data-v="' + j.dia + '"' + (j.dia === D.dia ? ' aria-current="true"' : '') + '><td>' + fCorta(j.dia) + '</td><td class="n">' + (j.ag ? eur(j.ag.total.v) : '—') + '</td><td class="n">' + (j.ag ? eur(j.tAg) : '—') + '</td><td class="n">' + (j.cierres.length ? eur(j.tCi) : '—') + '</td>' + (j.ag && j.cierres.length ? difCelda(j.dif) : '<td class="n">—</td>') + '<td>' + chip(j.estado) + '</td></tr>'; }).join('') +
     '<tr class="total"><td>Total</td><td></td><td class="n">' + eur(tot.ag) + '</td><td class="n">' + eur(tot.ci) + '</td>' + difCelda(tot.dif) + '<td><small>días con los dos datos</small></td></tr></tbody></table></div>' +
-    '<p class="cj-botones" style="margin-top:12px"><button type="button" class="btn claro peq" data-cd="csv" data-v="' + mes + '">Descargar CSV del mes</button></p></section>';
+    '<p class="cj-botones" style="margin-top:12px"><button type="button" class="btn claro peq" data-cd="csv" data-v="' + mes + '">Descargar Excel del mes</button></p></section>';
   return h;
 }
 function pintar(){
@@ -1368,16 +1440,21 @@ async function rellenar(){
   D.rellenando = false; pintar();
 }
 function csv(mes){
-  var fm = D.datos.formasCierre || [], q = function(v){ return (Number(v || 0) / 100).toFixed(2).replace('.', ','); };
-  var lin = [['Jornada', 'Estado', 'Ventas Ágora', 'Cobrado Ágora', 'Cierre de caja', 'Diferencia', 'Efectivo Ágora', 'Efectivo cierre'].concat(fm.map(function(k){ return etiqueta(k) + ' Ágora'; }), fm.map(function(k){ return etiqueta(k) + ' cierre'; }), ['Cierres']).join(';')];
+  var fm = D.datos.formasCierre || [], e = function(v){ return Math.round(Number(v || 0)) / 100; }, sum = {};
+  var cab = ['Jornada', 'Estado', 'Ventas Ágora', 'Cobrado Ágora', 'Cierre de caja', 'Diferencia', 'Efectivo Ágora', 'Efectivo cierre'].concat(fm.map(function(k){ return etiqueta(k) + ' Ágora'; }), fm.map(function(k){ return etiqueta(k) + ' cierre'; }), ['Cierres']);
+  var filas = [cab], ac = function(i, v){ sum[i] = (sum[i] || 0) + v; return v; };
   jornadas().filter(function(d){ return d.slice(0, 7) === mes; }).forEach(function(d){
     var j = jornada(d), f = {}; j.filas.forEach(function(x){ f[x.k] = x; });
-    var g = function(k, c){ return q(f[k] ? f[k][c] : 0); };
-    lin.push([d.split('-').reverse().join('/'), ESTADOS[j.estado][0], j.ag ? q(j.ag.total.v) : '', q(j.tAg), q(j.tCi), q(j.dif), g('Efectivo', 'ag'), g('Efectivo', 'ci')]
-      .concat(fm.map(function(k){ return g(k, 'ag'); }), fm.map(function(k){ return g(k, 'ci'); }), [j.cierres.map(function(c){ return c.turno + ' ' + c.emp; }).join(' / ')]).join(';'));
+    var g = function(k, c){ return f[k] ? f[k][c] : 0; }, ambos = !!(j.ag && j.cierres.length);
+    var fila = [d.split('-').reverse().join('/'), ESTADOS[j.estado][0], j.ag ? e(j.ag.total.v) : '', j.ag ? e(j.tAg) : '', j.cierres.length ? e(j.tCi) : '', ambos ? e(j.dif) : '',
+      j.ag ? e(g('Efectivo', 'ag')) : '', j.cierres.length ? e(g('Efectivo', 'ci')) : '']
+      .concat(fm.map(function(k){ return j.ag ? e(g(k, 'ag')) : ''; }), fm.map(function(k){ return j.cierres.length ? e(g(k, 'ci')) : ''; }), [j.cierres.map(function(c){ return c.turno + ' ' + c.emp; }).join(' / ')]);
+    fila.forEach(function(v, i){ if (i >= 2 && typeof v === 'number') ac(i, v); });
+    filas.push(fila);
   });
-  var b = new Blob(['﻿' + lin.join('\r\n')], { type: 'text/csv;charset=utf-8' }), a = document.createElement('a');
-  a.href = URL.createObjectURL(b); a.download = 'cuadre_trattoria_' + mes + '.csv'; document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  var tot = cab.map(function(_, i){ return i === 0 ? 'Total' : (i >= 2 && i < cab.length - 1 && sum[i] != null) ? Math.round(sum[i] * 100) / 100 : ''; });
+  filas.push(tot);
+  XLSX.descargar('cuadre_trattoria_' + mes + '.xlsx', 'Cuadre ' + mes, filas, { totales: true });
 }
 function alClic(ev){
   var b = ev.target.closest ? ev.target.closest('[data-cd]') : null; if (!b || b.disabled || !D.raiz.contains(b)) return;
