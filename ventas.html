@@ -989,10 +989,10 @@ return { libro: libro, descargar: descargar };
    ============================================================ */
 window.CAJA = (function(){
 'use strict';
-var SES_CAJA = 'trattoria_caja_v1', BORRADOR = 'trattoria_caja_borrador_v1';
+var SES_CAJA = 'trattoria_caja_v1', BORRADOR = 'trattoria_caja_borrador_v1', SES_ED = 'trattoria_caja_edicion_v1';
 var MARCA = '<div class="marca"><span class="rotulo">Trattoria<small>Sant Arcangelo</small></span></div>';
 var C = { raiz: null, modo: 'socio', token: '', nombre: '', cfg: null, vista: 'nuevo', f: null, guardando: false, ultimo: null, msg: null,
-  lista: null, mes: '', det: null, fotos: null, emp: null, cargando: false, aviso: null };
+  lista: null, mes: '', det: null, fotos: null, emp: null, cargando: false, aviso: null, ed: null, edPide: false, edMsg: '' };
 
 function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){ return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
 function eur(n){ n = Number(n) || 0; return n.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €'; }
@@ -1003,6 +1003,8 @@ function fechaTxt(iso){ var p = String(iso || '').split('-'); return p.length ==
 function guardarLS(k, v){ try { if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, JSON.stringify(v)); } catch (e){} }
 function leerLS(k){ try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e){ return null; } }
 function sesionCaja(){ var s = leerLS(SES_CAJA); return s && s.token && s.expira && Date.parse(s.expira) > Date.now() ? s : null; }
+function sesionEd(){ var s = leerLS(SES_ED); return s && s.edicion && s.expira && Date.parse(s.expira) > Date.now() ? s : null; }   // edición de cierres: solo Jorge, con su código
+function fotoHtml(v, alt, peq){ return /^data:image\//.test(v || '') ? '<img class="cj-foto' + (peq ? ' peq' : '') + '" src="' + esc(v) + '" alt="' + alt + '">' : (v ? '<p class="sub-txt">Hay una foto guardada (no se ha podido mostrar). Se conserva.</p>' : ''); }
 async function pedir(op, datos){ return API.accion('caja', Object.assign({ op: op }, datos || {}), C.token || undefined); }
 
 /* ---------- Formulario ---------- */
@@ -1015,17 +1017,18 @@ function calc(f){
   var tf = cfg.formas.reduce(function(s, k){ return s + num(f.formas[k]); }, 0), rec = cont + tg + tr;
   return { efectivo: cont, gastos: tg, retiros: tr, recaudacion: rec, formas: tf, total: rec + tf };
 }
-function guardarBorrador(){ if (C.f) guardarLS(BORRADOR, Object.assign({}, C.f, { fotoEfectivo: '', gastos: C.f.gastos.map(function(g){ return Object.assign({}, g, { foto: '' }); }), quien: C.modo === 'caja' ? C.nombre : 'socio' })); }
+function guardarBorrador(){ if (C.f && !C.ed) guardarLS(BORRADOR, Object.assign({}, C.f, { fotoEfectivo: '', gastos: C.f.gastos.map(function(g){ return Object.assign({}, g, { foto: '' }); }), quien: C.modo === 'caja' ? C.nombre : 'socio' })); }
 function nombreDenom(v){ return v >= 1 ? v + ' €' : Math.round(v * 100) + ' cént.'; }
 
 function vistaNuevo(){
   var f = C.f, cfg = C.cfg, c = calc(f), h = '';
   if (C.ultimo) return vistaGuardado();
+  if (C.ed) h += vistaEdicionCab();
   h += '<section class="bloque cj-card"><h2><span class="cj-n">1</span>Datos del cierre</h2><div class="cj-dos">' +
     '<div><label for="cj-fecha">Fecha</label><input class="campo" type="date" id="cj-fecha" data-cjf="fecha" value="' + esc(f.fecha) + '" max="' + esc(cfg.hoy) + '"></div>' +
     '<div><label for="cj-turno">Turno</label><select class="sel" id="cj-turno" data-cjf="turno"><option value="">Elige el turno</option>' + cfg.turnos.map(function(t){ return '<option' + (t === f.turno ? ' selected' : '') + '>' + esc(t) + '</option>'; }).join('') + '</select></div></div>' +
     (C.modo === 'caja' ? '<p class="cj-quien">Encargado: <b>' + esc(C.nombre) + '</b></p>' :
-      '<label for="cj-emp" style="margin-top:12px">Encargado que hace el cierre</label><select class="sel" id="cj-emp" data-cjf="empleado"><option value="">Elige el encargado</option>' + cfg.empleados.map(function(n){ return '<option' + (n === f.empleado ? ' selected' : '') + '>' + esc(n) + '</option>'; }).join('') + '</select>' +
+      '<label for="cj-emp" style="margin-top:12px">Encargado que hace el cierre</label><select class="sel" id="cj-emp" data-cjf="empleado"><option value="">Elige el encargado</option>' + cfg.empleados.concat(C.ed && f.empleado && cfg.empleados.indexOf(f.empleado) < 0 ? [f.empleado] : []).map(function(n){ return '<option' + (n === f.empleado ? ' selected' : '') + '>' + esc(n) + '</option>'; }).join('') + '</select>' +
       (cfg.empleados.length ? '' : '<p class="aviso warn">Todavía no hay encargados. Añádelos en «Encargados».</p>')) + '</section>';
   h += '<section class="bloque cj-card"><h2><span class="cj-n">2</span>Retira el fondo de caja</h2><p class="sub-txt">Antes de contar, aparta el fondo de caja inicial. Ese dinero no se cuenta en el arqueo: se queda para el siguiente turno.</p>' +
     '<label for="cj-fondo">Fondo de caja retirado (€)</label><input class="campo cj-imp" id="cj-fondo" data-cjf="fondoInicial" inputmode="decimal" placeholder="0,00" value="' + esc(f.fondoInicial) + '"></section>';
@@ -1045,11 +1048,21 @@ function vistaNuevo(){
     '</div><div class="cj-linea fuerte"><span>Total otras formas de pago</span><span id="cj-t-formas">' + eur(c.formas) + '</span></div></section>';
   h += '<section class="bloque cj-card"><h2><span class="cj-n">8</span>Observaciones</h2><textarea class="campo cj-obs" data-cjf="observaciones" placeholder="Incidencias: errores de TPV, billetes falsos, clientes, descuadres…">' + esc(f.observaciones) + '</textarea></section>';
   h += '<section class="bloque cj-card"><h2><span class="cj-n">9</span>Foto del efectivo (opcional)</h2><p class="sub-txt">Coloca los billetes boca arriba, con el número de serie visible, antes de guardarlos en la caja fuerte.</p>' +
-    (f.fotoEfectivo ? '<img class="cj-foto" src="' + esc(f.fotoEfectivo) + '" alt="Foto del efectivo"><p><button type="button" class="btn claro peq" data-cj="foto-quitar">Quitar la foto</button></p>' : '') +
+    (f.fotoEfectivo ? fotoHtml(f.fotoEfectivo, 'Foto del efectivo') + '<p><button type="button" class="btn claro peq" data-cj="foto-quitar">Quitar la foto</button></p>' : '') +
     '<label class="btn claro peq cj-subir">' + (f.fotoEfectivo ? 'Cambiar la foto' : 'Hacer o subir la foto') + '<input type="file" accept="image/*" capture="environment" data-cjf="foto-efectivo" class="oculto"></label></section>';
   h += '<section class="cj-total"><div><span>Total del día</span><b id="cj-total">' + eur(c.total) + '</b><small id="cj-total-d">Efectivo ' + eur(c.recaudacion) + ' + otras formas ' + eur(c.formas) + '</small></div>' +
-    '<div class="cj-botones"><button type="button" class="btn claro" data-cj="limpiar">Limpiar</button><button type="button" class="btn" data-cj="guardar"' + (C.guardando ? ' disabled' : '') + '>' + (C.guardando ? 'Guardando…' : 'Guardar cierre') + '</button></div></section>';
+    '<div class="cj-botones">' + (C.ed ? '<button type="button" class="btn claro" data-cj="ed-cancelar">Cancelar</button>' : '<button type="button" class="btn claro" data-cj="limpiar">Limpiar</button>') +
+    '<button type="button" class="btn" data-cj="guardar"' + (C.guardando ? ' disabled' : '') + '>' + (C.guardando ? 'Guardando…' : (C.ed ? 'Guardar cambios' : 'Guardar cierre')) + '</button></div></section>';
   return h;
+}
+function edAcceso(){
+  return '<div class="cj-dos" style="margin-top:10px"><div><label for="cj-edc">Código de edición (solo Jorge)</label><input class="campo" id="cj-edc" type="password" inputmode="numeric" maxlength="8" autocomplete="off"></div>' +
+    '<div style="align-self:end"><button type="button" class="btn" data-cj="ed-entrar">Entrar</button></div></div>' + (C.edMsg ? '<div class="aviso err" role="alert" style="margin-top:8px">' + esc(C.edMsg) + '</div>' : '');
+}
+function vistaEdicionCab(){
+  var o = C.ed.original;
+  return '<section class="bloque"><div class="aviso warn"><b>Estás modificando el cierre del ' + esc(fechaTxt(o.fecha)) + ' · ' + esc(o.turno) + ' · ' + esc(o.empleado) + '.</b> ' +
+    'Total guardado: ' + eur(o.totalDia) + '. Al guardar se recalculan los totales y queda anotado que lo has modificado tú.</div>' + (sesionEd() ? '' : edAcceso()) + '</section>';
 }
 function etiquetaForma(k){ return k === 'Tarjeta' ? 'Tarjeta (cierre del datáfono)' : k.charAt(0) + k.slice(1).toLowerCase(); }
 function lineasHtml(tipo, campos, foto){
@@ -1058,7 +1071,7 @@ function lineasHtml(tipo, campos, foto){
   h += arr.map(function(x, i){
     return '<div class="cj-item"><div class="cj-dos">' + campos.map(function(c){ return '<div><label>' + c[1] + '</label><input class="campo" maxlength="120" data-cjf="linea" data-t="' + tipo + '" data-i="' + i + '" data-k="' + c[0] + '" value="' + esc(x[c[0]] || '') + '"></div>'; }).join('') +
       '<div><label>Importe (€)</label><input class="campo cj-imp" inputmode="decimal" placeholder="0,00" data-cjf="linea" data-t="' + tipo + '" data-i="' + i + '" data-k="monto" value="' + esc(x.monto || '') + '"></div></div>' +
-      (foto ? (x.foto ? '<img class="cj-foto peq" src="' + esc(x.foto) + '" alt="Ticket del gasto">' : '') + '<label class="btn claro peq cj-subir">' + (x.foto ? 'Cambiar foto del ticket' : 'Foto del ticket (opcional)') + '<input type="file" accept="image/*" capture="environment" data-cjf="foto-gasto" data-i="' + i + '" class="oculto"></label> ' : '') +
+      (foto ? fotoHtml(x.foto, 'Ticket del gasto', true) + '<label class="btn claro peq cj-subir">' + (x.foto ? 'Cambiar foto del ticket' : 'Foto del ticket (opcional)') + '<input type="file" accept="image/*" capture="environment" data-cjf="foto-gasto" data-i="' + i + '" class="oculto"></label> ' : '') +
       '<button type="button" class="btn peligro peq" data-cj="quitar-linea" data-t="' + tipo + '" data-i="' + i + '">Quitar</button></div>';
   }).join('');
   var tot = arr.reduce(function(s, x){ return s + num(x.monto); }, 0);
@@ -1082,7 +1095,9 @@ function detalleHtml(e, fotos){
   var formas = C.cfg ? C.cfg.formas : Object.keys(e.formas || {}), den = e.denom || {}, vals = Object.keys(den).map(Number).sort(function(a, b){ return b - a; });
   var tabla = function(filas){ return '<table class="cj-tabla"><tbody>' + filas.join('') + '</tbody></table>'; }, fila = function(a, b, cl){ return '<tr' + (cl ? ' class="' + cl + '"' : '') + '><td>' + a + '</td><td class="n">' + b + '</td></tr>'; };
   var h = '<div class="cj-det">';
-  h += '<p class="cj-meta"><b>' + esc(fechaTxt(e.fecha)) + '</b> · ' + esc(e.turno) + ' · Encargado: <b>' + esc(e.empleado) + '</b>' + (e.guardado ? ' · guardado el ' + esc(fechaTxt(e.guardado.slice(0, 10))) + ' a las ' + esc(new Date(e.guardado).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })) : '') + (e.por && e.por !== e.empleado ? ' por ' + esc(e.por) : '') + '</p>';
+  h += '<p class="cj-meta"><b>' + esc(fechaTxt(e.fecha)) + '</b> · ' + esc(e.turno) + ' · Encargado: <b>' + esc(e.empleado) + '</b>' + (e.guardado ? ' · guardado el ' + esc(fechaTxt(e.guardado.slice(0, 10))) + ' a las ' + esc(new Date(e.guardado).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })) : '') + (e.por && e.por !== e.empleado ? ' por ' + esc(e.por) : '') + '</p>' +
+    (e.editado ? '<p class="cj-meta"><b>Modificado</b> el ' + esc(fechaTxt(e.editado.slice(0, 10))) + ' a las ' + esc(new Date(e.editado).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })) + ' por ' + esc((e.ediciones || []).length ? e.ediciones[e.ediciones.length - 1].por : 'Jorge') +
+      ((e.ediciones || []).length > 1 ? ' (' + e.ediciones.length + ' veces)' : '') + ((e.ediciones || []).length ? '. Total antes del primer cambio: ' + eur(e.ediciones[0].antes.total) : '') + '.</p>' : '');
   h += '<h3>Efectivo</h3>' + tabla([fila('Fondo de caja retirado (no cuenta)', eur(e.fondoInicial))].concat(vals.map(function(v){ return fila(den[v] + ' × ' + nombreDenom(v), eur(den[v] * v)); })).concat([fila('Efectivo contado', eur(e.totalEfectivo), 'fuerte')]));
   if ((e.gastos || []).length) h += '<h3>Gastos</h3>' + tabla(e.gastos.map(function(g){ return fila(esc(g.concepto) + (g.autorizado ? ' <small>(autoriza ' + esc(g.autorizado) + ')</small>' : '') + (g.foto ? ' <small>· con foto</small>' : ''), eur(g.monto)); }).concat([fila('Total gastos', eur(e.totalGastos), 'fuerte')]));
   if ((e.retiros || []).length) h += '<h3>Retiros</h3>' + tabla(e.retiros.map(function(r){ return fila(esc(r.persona) + (r.motivo ? ' <small>(' + esc(r.motivo) + ')</small>' : ''), eur(r.monto)); }).concat([fila('Total retiros', eur(e.totalRetiros), 'fuerte')]));
@@ -1113,12 +1128,12 @@ function vistaHistorial(){
     '<button type="button" class="btn claro peq" data-cj="csv"' + (l.length ? '' : ' disabled') + '>Descargar Excel</button><button type="button" class="btn claro peq" data-cj="recargar">Actualizar</button></div></div>';
   if (!l.length) return h + '<div class="vacio"><b>No hay cierres en este mes</b>Cuando un encargado guarde un cierre, aparecerá aquí.</div></section>';
   h += '<div class="cj-scroll"><table class="cj-tabla cj-hist"><thead><tr><th>Día</th><th>Turno</th><th>Encargado</th><th class="n">Efectivo</th>' + fm.map(function(k){ return '<th class="n">' + esc(k === 'Tarjeta' ? 'Tarjeta' : etiquetaForma(k)) + '</th>'; }).join('') + '<th class="n">Total</th><th></th></tr></thead><tbody>' +
-    l.map(function(x){ return '<tr><td>' + esc(fechaTxt(x.fecha)) + '</td><td>' + esc(x.turno) + '</td><td>' + esc(x.empleado) + '</td><td class="n">' + eur(x.recaudacion) + '</td>' + fm.map(function(k){ return '<td class="n">' + eur((x.formas || {})[k]) + '</td>'; }).join('') + '<td class="n"><b>' + eur(x.total) + '</b></td><td><button type="button" class="btn claro peq" data-cj="ver" data-r="' + esc(x.ruta) + '">Ver</button></td></tr>'; }).join('') +
+    l.map(function(x){ return '<tr><td>' + esc(fechaTxt(x.fecha)) + '</td><td>' + esc(x.turno) + (x.editado ? ' <small>(modificado)</small>' : '') + '</td><td>' + esc(x.empleado) + '</td><td class="n">' + eur(x.recaudacion) + '</td>' + fm.map(function(k){ return '<td class="n">' + eur((x.formas || {})[k]) + '</td>'; }).join('') + '<td class="n"><b>' + eur(x.total) + '</b></td><td><button type="button" class="btn claro peq" data-cj="ver" data-r="' + esc(x.ruta) + '">Ver</button></td></tr>'; }).join('') +
     '<tr class="fuerte"><td colspan="3">Total del mes (' + l.length + (l.length === 1 ? ' cierre' : ' cierres') + ')</td><td class="n">' + eur(t.rec) + '</td>' + fm.map(function(k){ return '<td class="n">' + eur(t.f[k]) + '</td>'; }).join('') + '<td class="n">' + eur(t.total) + '</td><td></td></tr></tbody></table></div>';
   h += '<p class="sub-txt" style="margin-top:10px">«Efectivo» es la recaudación en efectivo: lo contado más los gastos y los retiros pagados con la caja.</p></section>';
   if (C.det){
     h += '<div class="cj-modal" role="dialog" aria-modal="true" aria-label="Detalle del cierre"><div class="cj-modal-in"><div class="bloque-cab"><h2>Detalle del cierre</h2><button type="button" class="btn claro peq" data-cj="cerrar">Cerrar</button></div>' +
-      (C.det.cierre ? detalleHtml(C.det.cierre, C.det.fotos) + '<p class="cj-botones" style="margin-top:14px"><button type="button" class="btn claro" data-cj="imprimir-det">Imprimir / PDF</button><button type="button" class="btn peligro" data-cj="borrar" data-r="' + esc(C.det.ruta) + '">Borrar este cierre</button></p>' : '<p class="sub-txt">Cargando…</p>') + '</div></div>';
+      (C.det.cierre ? detalleHtml(C.det.cierre, C.det.fotos) + '<p class="cj-botones" style="margin-top:14px"><button type="button" class="btn claro" data-cj="imprimir-det">Imprimir / PDF</button><button type="button" class="btn claro" data-cj="editar">Modificar (solo Jorge)</button><button type="button" class="btn peligro" data-cj="borrar" data-r="' + esc(C.det.ruta) + '">Borrar este cierre</button></p>' + (C.edPide ? edAcceso() : '') : '<p class="sub-txt">Cargando…</p>') + '</div></div>';
   }
   return h;
 }
@@ -1163,6 +1178,7 @@ async function guardar(){
   if (!f.fecha) fallos.push('la fecha'); if (!f.turno) fallos.push('el turno'); if (C.modo !== 'caja' && !f.empleado) fallos.push('el encargado');
   if (f.formas.Tarjeta === '' || f.formas.Tarjeta == null) fallos.push('el total de tarjeta del datáfono (0 si no hubo)');
   if (fallos.length){ C.msg = { err: 'Falta ' + fallos.join(', ') + '.' }; pintar(); window.scrollTo(0, 0); return; }
+  if (C.ed) return guardarEdicion(f, c);
   if (!confirm('¿Guardar el cierre del ' + fechaTxt(f.fecha) + ' (' + f.turno + ')?\n\nRecaudación en efectivo: ' + eur(c.recaudacion) + '\nOtras formas de pago: ' + eur(c.formas) + '\nTOTAL DEL DÍA: ' + eur(c.total) + '\n\nDespués no se puede cambiar.')) return;
   C.guardando = true; C.msg = null; pintar();
   try {
@@ -1170,6 +1186,41 @@ async function guardar(){
     C.ultimo = j.cierre; C.ultimoFotos = {}; C.f = formVacio(); guardarLS(BORRADOR, null); C.lista = null;
   } catch (e){ C.guardando = false; return fallo(e); }
   C.guardando = false; pintar(); window.scrollTo(0, 0);
+}
+/* ---------- Modificar un cierre (solo Jorge, con su código de edición) ---------- */
+function abrirEdicion(){
+  var e = C.det.cierre, fotos = C.det.fotos || {}, txt = function(v){ return v == null ? '' : String(v).replace('.', ','); };
+  var foto = function(r){ return r ? (fotos[r] || r) : ''; }, ef = (e.fotos || []).filter(function(x){ return x.tipo === 'Efectivo contado'; })[0];
+  var f = { fecha: e.fecha, turno: e.turno, empleado: e.empleado, fondoInicial: e.fondoInicial ? txt(e.fondoInicial) : '', denom: Object.assign({}, e.denom || {}),
+    gastos: (e.gastos || []).map(function(g){ return { concepto: g.concepto || '', autorizado: g.autorizado || '', monto: txt(g.monto), foto: foto(g.foto), _ruta: g.foto || '', _dato: foto(g.foto) }; }),
+    retiros: (e.retiros || []).map(function(r){ return { persona: r.persona || '', motivo: r.motivo || '', monto: txt(r.monto) }; }),
+    formas: {}, observaciones: e.observaciones || '', fotoEfectivo: foto(ef && ef.ruta) };
+  (C.cfg.formas || []).forEach(function(k){ var v = (e.formas || {})[k]; f.formas[k] = k === 'Tarjeta' ? txt(v || 0) : (v ? txt(v) : ''); });
+  C.ed = { ruta: C.det.ruta, original: e, efRuta: ef ? ef.ruta : '', efDato: f.fotoEfectivo }; C.f = f; C.det = null; C.edPide = false; C.edMsg = ''; C.ultimo = null; C.msg = null; C.aviso = null; C.vista = 'nuevo';
+  pintar(); window.scrollTo(0, 0);
+}
+function cerrarEdicion(){ C.ed = null; C.f = null; C.edPide = false; C.edMsg = ''; }
+async function entrarEdicion(){
+  var c = ((document.getElementById('cj-edc') || {}).value || '').trim();
+  if (!c){ C.edMsg = 'Escribe el código de edición.'; pintar(); return; }
+  try { var r = await pedir('editarLogin', { codigo: c }); guardarLS(SES_ED, { edicion: r.edicion, expira: r.expira }); C.edMsg = ''; }
+  catch (e){ C.edMsg = e.message; pintar(); return; }
+  if (C.ed){ C.msg = null; pintar(); return; }
+  if (C.det && C.det.cierre) abrirEdicion();
+}
+async function guardarEdicion(f, c){
+  var s = sesionEd(); if (!s){ C.msg = { err: 'Escribe tu código de edición (arriba) para guardar los cambios.' }; pintar(); window.scrollTo(0, 0); return; }
+  var o = C.ed.original;
+  if (!confirm('¿Guardar los cambios del cierre del ' + fechaTxt(o.fecha) + '?\n\nTotal guardado: ' + eur(o.totalDia) + '\nTotal nuevo: ' + eur(c.total) + '\n\nQuedará anotado que lo has modificado tú.')) return;
+  // una foto sin cambiar se manda con su ruta (se conserva); una nueva, como imagen
+  var envio = JSON.parse(JSON.stringify(f));
+  envio.fotoEfectivo = envio.fotoEfectivo && envio.fotoEfectivo === C.ed.efDato ? C.ed.efRuta : (envio.fotoEfectivo || '');
+  envio.gastos.forEach(function(g){ g.foto = g.foto && g._ruta && g.foto === g._dato ? g._ruta : (g.foto || ''); delete g._ruta; delete g._dato; });
+  C.guardando = true; C.msg = null; pintar();
+  try { await pedir('editar', { ruta: C.ed.ruta, cierre: envio, edicion: s.edicion }); }
+  catch (e){ C.guardando = false; if (e.codigo === 'EDICION') guardarLS(SES_ED, null); return fallo(e); }
+  C.guardando = false; cerrarEdicion(); try { await preparar(); } catch (e){}
+  C.vista = 'historial'; C.lista = null; C.msg = { ok: 'Cierre modificado. El cuadre de caja ya usa los importes nuevos.' }; pintar(); window.scrollTo(0, 0); cargarLista();
 }
 async function cargarLista(){ try { C.lista = await pedir('listar'); } catch (e){ C.lista = { cierres: [], formas: C.cfg.formas }; fallo(e); return; } pintar(); }
 async function cargarEmp(){ try { var j = await pedir('empleados'); C.emp = j.empleados; C.cfg.empleados = j.empleados.map(function(e){ return e.n; }); } catch (e){ C.emp = []; fallo(e); return; } pintar(); }
@@ -1187,7 +1238,7 @@ function csv(){
 }
 async function clic(b){
   var a = b.dataset.cj, f = C.f;
-  if (a === 'vista'){ C.vista = b.dataset.v; C.msg = null; C.aviso = null; C.det = null; pintar(); if (C.vista === 'historial' && !C.lista) cargarLista(); if (C.vista === 'encargados' && !C.emp) cargarEmp(); return; }
+  if (a === 'vista'){ if (C.ed){ if (!confirm('Estás modificando un cierre. ¿Salir sin guardar los cambios?')) return; cerrarEdicion(); try { await preparar(); } catch (e){} } C.vista = b.dataset.v; C.msg = null; C.aviso = null; C.det = null; pintar(); if (C.vista === 'historial' && !C.lista) cargarLista(); if (C.vista === 'encargados' && !C.emp) cargarEmp(); return; }
   if (a === 'den'){ var k = b.dataset.v, q = Math.max(0, (Number(f.denom[k]) || 0) + Number(b.dataset.d)); if (q) f.denom[k] = q; else delete f.denom[k];
     var inp = C.raiz.querySelector('input[data-cjf="den"][data-v="' + k + '"]'); if (inp) inp.value = q || ''; refrescar(); return; }
   if (a === 'anadir'){ f[b.dataset.t].push(b.dataset.t === 'gastos' ? { concepto: '', autorizado: '', monto: '', foto: '' } : { persona: '', motivo: '', monto: '' }); guardarBorrador(); pintar(); return; }
@@ -1200,8 +1251,11 @@ async function clic(b){
   if (a === 'recargar'){ C.lista = null; pintar(); return cargarLista(); }
   if (a === 'csv') return csv();
   if (a === 'ver'){ C.det = { ruta: b.dataset.r, cierre: null, fotos: {} }; pintar(); try { var j = await pedir('leer', { ruta: b.dataset.r }); if (C.det && C.det.ruta === b.dataset.r){ C.det.cierre = j.cierre; C.det.fotos = j.fotos || {}; } } catch (e){ C.det = null; return fallo(e); } pintar(); return; }
-  if (a === 'cerrar'){ C.det = null; pintar(); return; }
+  if (a === 'cerrar'){ C.det = null; C.edPide = false; C.edMsg = ''; pintar(); return; }
   if (a === 'imprimir-det') return imprimir(C.det.cierre, C.det.fotos);
+  if (a === 'editar'){ if (sesionEd()) return abrirEdicion(); C.edPide = true; C.edMsg = ''; pintar(); var ic = document.getElementById('cj-edc'); if (ic) ic.focus(); return; }
+  if (a === 'ed-entrar') return entrarEdicion();
+  if (a === 'ed-cancelar'){ if (!confirm('¿Salir sin guardar los cambios?')) return; cerrarEdicion(); try { await preparar(); } catch (e){} C.vista = 'historial'; C.msg = null; pintar(); if (!C.lista) cargarLista(); return; }
   if (a === 'borrar'){ if (!confirm('¿Borrar este cierre y sus fotos? No se puede deshacer.')) return; try { await pedir('borrar', { ruta: b.dataset.r }); C.det = null; C.msg = { ok: 'Cierre borrado.' }; C.lista = null; pintar(); return cargarLista(); } catch (e){ return fallo(e); } }
   if (a === 'emp-quitar'){ if (!confirm('¿Quitar a ' + b.dataset.n + '? Dejará de poder hacer cierres desde ese momento.')) return; try { var r = await pedir('empleadoQuitar', { nombre: b.dataset.n }); C.emp = r.empleados; C.cfg.empleados = r.empleados.map(function(e){ return e.n; }); C.msg = { ok: b.dataset.n + ' ya no puede hacer cierres.' }; C.aviso = null; pintar(); } catch (e){ fallo(e); } return; }
   if (a === 'emp-anadir'){
@@ -1232,6 +1286,7 @@ async function cambio(t){
 }
 document.addEventListener('click', function(ev){ var b = ev.target.closest ? ev.target.closest('[data-cj]') : null; if (b && !b.disabled && C.raiz && C.raiz.contains(b)) clic(b); });
 document.addEventListener('input', function(ev){ if (C.raiz && C.raiz.contains(ev.target)) entrada(ev.target); });
+document.addEventListener('keydown', function(ev){ if (ev.key === 'Enter' && ev.target && ev.target.id === 'cj-edc' && C.raiz && C.raiz.contains(ev.target)) entrarEdicion(); });
 document.addEventListener('change', function(ev){ if (C.raiz && C.raiz.contains(ev.target)) cambio(ev.target); });
 
 /* ---------- Entradas desde la página ---------- */
@@ -1245,7 +1300,7 @@ async function preparar(){
 }
 /* Pestaña dentro del panel de socios */
 async function montar(el, token){
-  if (C.modo !== 'socio' || C.token !== token){ C = Object.assign(C, { modo: 'socio', token: token, nombre: '', f: null, lista: null, emp: null, ultimo: null, det: null, vista: 'nuevo' }); }
+  if (C.modo !== 'socio' || C.token !== token){ C = Object.assign(C, { modo: 'socio', token: token, nombre: '', f: null, lista: null, emp: null, ultimo: null, det: null, vista: 'nuevo', ed: null, edPide: false, edMsg: '' }); }
   C.raiz = el;
   try { await preparar(); } catch (e){ return fallo(e); }
   pintar(); if (C.vista === 'historial' && !C.lista) cargarLista(); if (C.vista === 'encargados' && !C.emp) cargarEmp();
