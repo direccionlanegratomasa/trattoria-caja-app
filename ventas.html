@@ -1398,7 +1398,7 @@ function vistaMes(mes){
 function pintar(){
   var r = D.raiz; if (!r) return;
   if (!D.ses){ r.innerHTML = vistaAcceso(D.msg && D.msg.err); var c = document.getElementById('cd-c'); if (c) c.onkeydown = function(e){ if (e.key === 'Enter') entrar(); }; return; }
-  var cab = '<p class="cd-quien">Cuadre de caja · <b>' + esc(D.ses.nombre) + '</b> · <button type="button" class="enlace" data-cd="recargar">Actualizar</button> · <button type="button" class="enlace" data-cd="salir">Salir del cuadre</button></p>';
+  var cab = '<p class="cd-quien">Cuadre de caja · <b>' + esc(D.ses.nombre) + '</b> · <button type="button" class="enlace" data-cd="salir">Salir del cuadre</button></p>';
   if (D.cargando){ r.innerHTML = cab + '<div class="carga" role="status"><b>Cargando el cuadre…</b></div>'; return; }
   var h = cab + (D.msg && D.msg.err ? '<div class="aviso err">' + esc(D.msg.err) + '</div>' : '') + (D.msg && D.msg.ok ? '<div class="aviso ok">' + esc(D.msg.ok) + '</div>' : '');
   if (!D.datos){ r.innerHTML = h + '<button type="button" class="btn" data-cd="recargar">Reintentar</button>'; return; }
@@ -1476,7 +1476,7 @@ function alCambiar(ev){
 function montar(raiz, token){
   D.raiz = raiz; D.token = token; D.ses = leerSes(); D.msg = null;
   raiz.onclick = alClic; raiz.onchange = alCambiar;
-  if (D.ses) return cargar();                               // cada vez que se abre la pestaña, datos frescos (cierres recién guardados incluidos)
+  if (D.ses && !D.datos) return cargar();
   pintar();
 }
 function olvidar(){ ponerSes(null); D.ses = null; D.datos = null; }
