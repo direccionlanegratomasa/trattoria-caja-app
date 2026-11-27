@@ -1375,17 +1375,17 @@ function formaDe(m, formas){
 function etiqueta(k){ return k === 'UBER' ? 'Uber' : k === 'GLOVO' ? 'Glovo' : k === 'TRANSFERENCIA' ? 'Transferencia' : k; }
 function jornada(dia){
   var x = D.datos, ag = x.dias[dia] || null, cs = x.cierres[dia] || [], formas = x.formasCierre || ['Tarjeta', 'UBER', 'GLOVO', 'TRANSFERENCIA'];
-  var filas = [{ k: 'Efectivo', ag: 0, ci: 0 }].concat(formas.map(function(f){ return { k: f, ag: 0, ci: 0 }; })), por = {};
+  var filas = [{ k: 'Efectivo', ag: 0, pr: 0, ci: 0 }].concat(formas.map(function(f){ return { k: f, ag: 0, pr: 0, ci: 0 }; })), por = {};
   filas.forEach(function(f){ por[f.k] = f; });
-  if (ag) Object.keys(ag.total.c).forEach(function(m){
-    var k = formaDe(m, formas);
-    if (k) por[k].ag += ag.total.c[m];
-    else { var f = por['ag:' + m] = { k: m, ag: ag.total.c[m], ci: 0, soloAgora: true }; filas.push(f); }
-  });
+  var fila = function(m){ var k = formaDe(m, formas); if (k) return por[k]; return por['ag:' + m] || (por['ag:' + m] = filas[filas.push({ k: m, ag: 0, pr: 0, ci: 0, soloAgora: true }) - 1]); };
+  if (ag){
+    Object.keys(ag.total.c).forEach(function(m){ fila(m).ag += ag.total.c[m]; });
+    Object.keys(ag.total.p || {}).forEach(function(m){ fila(m).pr += ag.total.p[m]; });   // propinas que Ágora apunta en cada cobro
+  }
   cs.forEach(function(c){ por.Efectivo.ci += c.rec; formas.forEach(function(f){ por[f].ci += (c.formas || {})[f] || 0; }); });
-  var tAg = 0, tCi = 0; filas.forEach(function(f){ f.dif = f.ci - f.ag; tAg += f.ag; tCi += f.ci; });
-  var estado = !ag ? 'sinagora' : !cs.length ? 'sincierre' : Math.abs(tCi - tAg) > TOLERANCIA || filas.some(function(f){ return Math.abs(f.dif) > TOLERANCIA; }) ? 'descuadre' : 'ok';
-  return { dia: dia, ag: ag, cierres: cs, filas: filas.filter(function(f){ return f.ag || f.ci || f.k === 'Efectivo' || f.k === 'Tarjeta'; }), tAg: tAg, tCi: tCi, dif: tCi - tAg, estado: estado };
+  var tAg = 0, tPr = 0, tCi = 0; filas.forEach(function(f){ f.esp = f.ag + f.pr; f.dif = f.ci - f.esp; tAg += f.ag; tPr += f.pr; tCi += f.ci; });
+  var estado = !ag ? 'sinagora' : !cs.length ? 'sincierre' : Math.abs(tCi - tAg - tPr) > TOLERANCIA || filas.some(function(f){ return !f.soloAgora && Math.abs(f.dif) > TOLERANCIA; }) || filas.some(function(f){ return f.soloAgora && f.esp; }) ? 'descuadre' : 'ok';
+  return { dia: dia, ag: ag, cierres: cs, filas: filas.filter(function(f){ return f.ag || f.pr || f.ci || f.k === 'Efectivo' || f.k === 'Tarjeta'; }), tAg: tAg, tPr: tPr, tCi: tCi, dif: tCi - tAg - tPr, estado: estado };
 }
 var ESTADOS = { ok: ['Cuadra', 'cd-ok'], descuadre: ['Descuadre', 'cd-mal'], sincierre: ['Falta el cierre', 'cd-mal'], sinagora: ['Sin datos de Ágora', 'cd-gris'] };
 function chip(e){ var s = ESTADOS[e]; return '<span class="cd-chip ' + s[1] + '">' + s[0] + '</span>'; }
@@ -1414,17 +1414,17 @@ function vistaDia(j){
   h += '<section class="bloque"><h2>Ágora frente al cierre de caja</h2>';
   if (!j.ag) h += '<div class="aviso warn">Todavía no están los datos de Ágora de esta jornada. Se cargan solos cada mañana sobre las 06:20.</div>';
   if (!j.cierres.length) h += '<div class="aviso err"><b>No hay cierre de caja de esta jornada.</b> El cierre es obligatorio todos los días.</div>';
-  h += '<div class="cj-scroll"><table class="cj-tabla"><thead><tr><th>Forma de pago</th><th class="n">Ágora</th><th class="n">Cierre de caja</th><th class="n">Diferencia</th></tr></thead><tbody>' +
-    j.filas.map(function(f){ return '<tr><td>' + esc(etiqueta(f.k)) + (f.soloAgora ? ' <small>(no está en el cierre)</small>' : '') + '</td><td class="n">' + eur(f.ag) + '</td><td class="n">' + (f.soloAgora ? '—' : eur(f.ci)) + '</td>' + difCelda(f.dif) + '</tr>'; }).join('') +
-    '<tr class="total"><td>Total</td><td class="n">' + eur(j.tAg) + '</td><td class="n">' + eur(j.tCi) + '</td>' + difCelda(j.dif) + '</tr></tbody></table></div>' +
-    '<p class="sub-txt" style="margin-top:8px">Diferencia = cierre de caja − Ágora. En positivo, hay más dinero en el cierre que cobrado en Ágora; en negativo, falta. El efectivo del cierre es la recaudación (contado + gastos + retiros).</p></section>';
+  h += '<div class="cj-scroll"><table class="cj-tabla"><thead><tr><th>Forma de pago</th><th class="n">Ágora</th><th class="n">Propinas</th><th class="n">Ágora + propinas</th><th class="n">Cierre de caja</th><th class="n">Diferencia</th></tr></thead><tbody>' +
+    j.filas.map(function(f){ return '<tr><td>' + esc(etiqueta(f.k)) + (f.soloAgora ? ' <small>(no está en el cierre)</small>' : '') + '</td><td class="n">' + eur(f.ag) + '</td><td class="n">' + (f.pr ? eur(f.pr) : '—') + '</td><td class="n">' + eur(f.esp) + '</td><td class="n">' + (f.soloAgora ? '—' : eur(f.ci)) + '</td>' + difCelda(f.dif) + '</tr>'; }).join('') +
+    '<tr class="total"><td>Total</td><td class="n">' + eur(j.tAg) + '</td><td class="n">' + eur(j.tPr) + '</td><td class="n">' + eur(j.tAg + j.tPr) + '</td><td class="n">' + eur(j.tCi) + '</td>' + difCelda(j.dif) + '</tr></tbody></table></div>' +
+    '<p class="sub-txt" style="margin-top:8px">Diferencia = cierre de caja − (Ágora + propinas). En positivo, hay más dinero en el cierre que en Ágora; en negativo, falta. Las propinas son las que Ágora apunta en cada cobro: las de tarjeta van en el datáfono; las de efectivo solo cuentan si se registran en Ágora. El efectivo del cierre es la recaudación (contado + gastos + retiros).</p></section>';
   // Ventas de Ágora por centro
   if (j.ag){
-    var ks = Object.keys(j.ag.centros), cob = function(x){ return Object.keys(x.c).reduce(function(s, m){ return s + x.c[m]; }, 0); };
+    var ks = Object.keys(j.ag.centros), cob = function(x){ return Object.keys(x.c).reduce(function(s, m){ return s + x.c[m]; }, 0); }, prop = function(x){ return Object.keys(x.p || {}).reduce(function(s, m){ return s + x.p[m]; }, 0); };
     var tc = cob(j.ag.total);
-    h += '<section class="bloque"><h2>Ventas en Ágora</h2><div class="cj-scroll"><table class="cj-tabla"><thead><tr><th>Centro</th><th class="n">Tickets</th><th class="n">Ventas</th><th class="n">Cobrado</th></tr></thead><tbody>' +
-      ks.map(function(k){ var x = j.ag.centros[k]; return '<tr><td>' + esc(k) + '</td><td class="n">' + x.t + '</td><td class="n">' + eur(x.v) + '</td><td class="n">' + eur(cob(x)) + '</td></tr>'; }).join('') +
-      '<tr class="total"><td>Total</td><td class="n">' + j.ag.total.t + '</td><td class="n">' + eur(j.ag.total.v) + '</td><td class="n">' + eur(tc) + '</td></tr></tbody></table></div>' +
+    h += '<section class="bloque"><h2>Ventas en Ágora</h2><div class="cj-scroll"><table class="cj-tabla"><thead><tr><th>Centro</th><th class="n">Tickets</th><th class="n">Ventas</th><th class="n">Cobrado</th><th class="n">Propinas</th></tr></thead><tbody>' +
+      ks.map(function(k){ var x = j.ag.centros[k]; return '<tr><td>' + esc(k) + '</td><td class="n">' + x.t + '</td><td class="n">' + eur(x.v) + '</td><td class="n">' + eur(cob(x)) + '</td><td class="n">' + (prop(x) ? eur(prop(x)) : '—') + '</td></tr>'; }).join('') +
+      '<tr class="total"><td>Total</td><td class="n">' + j.ag.total.t + '</td><td class="n">' + eur(j.ag.total.v) + '</td><td class="n">' + eur(tc) + '</td><td class="n">' + eur(prop(j.ag.total)) + '</td></tr></tbody></table></div>' +
       (Math.abs(tc - j.ag.total.v) > TOLERANCIA ? '<div class="aviso warn" style="margin-top:10px">En Ágora, lo cobrado (' + eur(tc) + ') no coincide con las ventas (' + eur(j.ag.total.v) + '): diferencia ' + difTxt(tc - j.ag.total.v) + '. Puede haber tickets sin cobrar, propinas o invitaciones.</div>' : '') +
       (j.ag.cerrada ? '' : '<p class="sub-txt" style="margin-top:8px">Ojo: cuando se guardó, la jornada no estaba cerrada en Ágora.</p>') + '</section>';
   }
@@ -1441,12 +1441,12 @@ function vistaDia(j){
 function vistaMes(mes){
   var dias = jornadas().filter(function(d){ return d.slice(0, 7) === mes; }), js = dias.map(jornada), tot = { ag: 0, ci: 0, dif: 0 };
   var meses = {}; jornadas().forEach(function(d){ meses[d.slice(0, 7)] = 1; });
-  var cuenta = { ok: 0, descuadre: 0, sincierre: 0, sinagora: 0 }; js.forEach(function(j){ cuenta[j.estado]++; tot.ag += j.tAg; tot.ci += j.tCi; if (j.ag && j.cierres.length) tot.dif += j.dif; });
+  var cuenta = { ok: 0, descuadre: 0, sincierre: 0, sinagora: 0 }; tot.pr = 0; js.forEach(function(j){ cuenta[j.estado]++; tot.ag += j.tAg; tot.pr += j.tPr; tot.ci += j.tCi; if (j.ag && j.cierres.length) tot.dif += j.dif; });
   var h = '<section class="bloque"><div class="bloque-cab"><h2>Resumen del mes</h2><select class="sel cd-mes" data-cdf="mes" aria-label="Mes">' + Object.keys(meses).sort().reverse().map(function(m){ return '<option value="' + m + '"' + (m === mes ? ' selected' : '') + '>' + mesTxt(m) + '</option>'; }).join('') + '</select></div>' +
     '<p class="sub-txt">' + cuenta.ok + ' cuadran · ' + cuenta.descuadre + ' con descuadre · ' + cuenta.sincierre + ' sin cierre de caja' + (cuenta.sinagora ? ' · ' + cuenta.sinagora + ' sin datos de Ágora' : '') + '</p>' +
-    '<div class="cj-scroll"><table class="cj-tabla cd-mesT"><thead><tr><th>Día</th><th class="n">Ventas</th><th class="n">Cobrado Ágora</th><th class="n">Cierre de caja</th><th class="n">Diferencia</th><th>Estado</th></tr></thead><tbody>' +
-    js.slice().reverse().map(function(j){ return '<tr class="cd-fila" data-cd="ir" data-v="' + j.dia + '"' + (j.dia === D.dia ? ' aria-current="true"' : '') + '><td>' + fCorta(j.dia) + '</td><td class="n">' + (j.ag ? eur(j.ag.total.v) : '—') + '</td><td class="n">' + (j.ag ? eur(j.tAg) : '—') + '</td><td class="n">' + (j.cierres.length ? eur(j.tCi) : '—') + '</td>' + (j.ag && j.cierres.length ? difCelda(j.dif) : '<td class="n">—</td>') + '<td>' + chip(j.estado) + '</td></tr>'; }).join('') +
-    '<tr class="total"><td>Total</td><td></td><td class="n">' + eur(tot.ag) + '</td><td class="n">' + eur(tot.ci) + '</td>' + difCelda(tot.dif) + '<td><small>días con los dos datos</small></td></tr></tbody></table></div>' +
+    '<div class="cj-scroll"><table class="cj-tabla cd-mesT"><thead><tr><th>Día</th><th class="n">Ventas</th><th class="n">Cobrado Ágora</th><th class="n">Propinas</th><th class="n">Cierre de caja</th><th class="n">Diferencia</th><th>Estado</th></tr></thead><tbody>' +
+    js.slice().reverse().map(function(j){ return '<tr class="cd-fila" data-cd="ir" data-v="' + j.dia + '"' + (j.dia === D.dia ? ' aria-current="true"' : '') + '><td>' + fCorta(j.dia) + '</td><td class="n">' + (j.ag ? eur(j.ag.total.v) : '—') + '</td><td class="n">' + (j.ag ? eur(j.tAg) : '—') + '</td><td class="n">' + (j.ag ? eur(j.tPr) : '—') + '</td><td class="n">' + (j.cierres.length ? eur(j.tCi) : '—') + '</td>' + (j.ag && j.cierres.length ? difCelda(j.dif) : '<td class="n">—</td>') + '<td>' + chip(j.estado) + '</td></tr>'; }).join('') +
+    '<tr class="total"><td>Total</td><td></td><td class="n">' + eur(tot.ag) + '</td><td class="n">' + eur(tot.pr) + '</td><td class="n">' + eur(tot.ci) + '</td>' + difCelda(tot.dif) + '<td><small>días con los dos datos</small></td></tr></tbody></table></div>' +
     '<p class="cj-botones" style="margin-top:12px"><button type="button" class="btn claro peq" data-cd="csv" data-v="' + mes + '">Descargar Excel del mes</button></p></section>';
   return h;
 }
@@ -1465,7 +1465,7 @@ function pintar(){
     var i = lista.indexOf(D.dia), j = jornada(D.dia); j.prev = i > 0; j.next = i < lista.length - 1;
     h += vistaDia(j) + vistaMes(D.mes && D.mes.length === 7 ? D.mes : D.dia.slice(0, 7));
   }
-  h += '<section class="bloque"><h2>Datos</h2><ul class="notas"><li>Ágora se lee cada mañana sobre las 06:20 (jornada anterior). Se considera cuadrado hasta 1 € de diferencia.</li>' +
+  h += '<section class="bloque"><h2>Datos</h2><ul class="notas"><li>Ágora se lee cada mañana sobre las 06:20 (jornada anterior). Se considera cuadrado hasta 1 € de diferencia. Las propinas de Ágora se suman a lo cobrado: el cierre debe llevar ventas + propinas.</li>' +
     '<li>Jornada de un cierre: su fecha; si se guardó antes de las 12:00 de ese día, cuenta para la jornada anterior.</li>' +
     (D.datos.actualizado ? '<li>Última actualización: ' + esc(D.datos.actualizado.slice(0, 10).split('-').reverse().join('/') + ' ' + D.datos.actualizado.slice(11, 16)) + ' (UTC)</li>' : '') +
     (D.datos.reloj ? '' : '<li><b>La carga diaria automática todavía no está programada.</b> Pulsa «Cargar días que faltan» y quedará programada.</li>') + '</ul>' +
@@ -1496,14 +1496,14 @@ async function rellenar(){
 }
 function csv(mes){
   var fm = D.datos.formasCierre || [], e = function(v){ return Math.round(Number(v || 0)) / 100; }, sum = {};
-  var cab = ['Jornada', 'Estado', 'Ventas Ágora', 'Cobrado Ágora', 'Cierre de caja', 'Diferencia', 'Efectivo Ágora', 'Efectivo cierre'].concat(fm.map(function(k){ return etiqueta(k) + ' Ágora'; }), fm.map(function(k){ return etiqueta(k) + ' cierre'; }), ['Cierres']);
+  var cab = ['Jornada', 'Estado', 'Ventas Ágora', 'Cobrado Ágora', 'Propinas Ágora', 'Cierre de caja', 'Diferencia', 'Efectivo Ágora', 'Propinas Efectivo', 'Efectivo cierre'].concat(fm.map(function(k){ return etiqueta(k) + ' Ágora'; }), fm.map(function(k){ return 'Propinas ' + etiqueta(k); }), fm.map(function(k){ return etiqueta(k) + ' cierre'; }), ['Cierres']);
   var filas = [cab], ac = function(i, v){ sum[i] = (sum[i] || 0) + v; return v; };
   jornadas().filter(function(d){ return d.slice(0, 7) === mes; }).forEach(function(d){
     var j = jornada(d), f = {}; j.filas.forEach(function(x){ f[x.k] = x; });
     var g = function(k, c){ return f[k] ? f[k][c] : 0; }, ambos = !!(j.ag && j.cierres.length);
-    var fila = [d.split('-').reverse().join('/'), ESTADOS[j.estado][0], j.ag ? e(j.ag.total.v) : '', j.ag ? e(j.tAg) : '', j.cierres.length ? e(j.tCi) : '', ambos ? e(j.dif) : '',
-      j.ag ? e(g('Efectivo', 'ag')) : '', j.cierres.length ? e(g('Efectivo', 'ci')) : '']
-      .concat(fm.map(function(k){ return j.ag ? e(g(k, 'ag')) : ''; }), fm.map(function(k){ return j.cierres.length ? e(g(k, 'ci')) : ''; }), [j.cierres.map(function(c){ return c.turno + ' ' + c.emp; }).join(' / ')]);
+    var fila = [d.split('-').reverse().join('/'), ESTADOS[j.estado][0], j.ag ? e(j.ag.total.v) : '', j.ag ? e(j.tAg) : '', j.ag ? e(j.tPr) : '', j.cierres.length ? e(j.tCi) : '', ambos ? e(j.dif) : '',
+      j.ag ? e(g('Efectivo', 'ag')) : '', j.ag ? e(g('Efectivo', 'pr')) : '', j.cierres.length ? e(g('Efectivo', 'ci')) : '']
+      .concat(fm.map(function(k){ return j.ag ? e(g(k, 'ag')) : ''; }), fm.map(function(k){ return j.ag ? e(g(k, 'pr')) : ''; }), fm.map(function(k){ return j.cierres.length ? e(g(k, 'ci')) : ''; }), [j.cierres.map(function(c){ return c.turno + ' ' + c.emp; }).join(' / ')]);
     fila.forEach(function(v, i){ if (i >= 2 && typeof v === 'number') ac(i, v); });
     filas.push(fila);
   });
