@@ -1109,12 +1109,31 @@ function detalleHtml(e, fotos){
   else if ((e.fotos || []).length) h += '<p class="sub-txt">' + e.fotos.length + ' foto(s) guardadas.</p>';
   return h + '</div>';
 }
+/* Ventana de impresión (de ahí se guarda en PDF). Se abre al pulsar, antes de pedir datos, para que el navegador no la bloquee. */
+var CSS_IMPRESION = 'body{font-family:Arial,sans-serif;color:#111;margin:24px;font-size:13px}h1{font-size:20px;margin:0 0 4px}h2{font-size:16px;margin:20px 0 6px}h3{font-size:14px;margin:16px 0 4px;border-bottom:2px solid #111}' +
+  'table{width:100%;border-collapse:collapse}th{text-align:left;font-size:12px;padding:4px 4px 4px 0;border-bottom:2px solid #111}th.n{text-align:right}td{padding:3px 4px 3px 0;border-bottom:1px solid #ddd}td.n{text-align:right;white-space:nowrap}' +
+  'tr.fuerte td{font-weight:bold}tr.total td{font-weight:bold;font-size:14px;border-top:2px solid #111}small,.sub-txt{color:#555}.sub-txt{font-size:11px}.cd-rojo{color:#b00000;font-weight:bold}.cd-verde{color:#1d6b2f}' +
+  '.cd-chip{display:inline-block;padding:2px 8px;border:1.5px solid #111;border-radius:10px;font-weight:bold;font-size:12px}.cd-mal{border-color:#b00000;color:#b00000}.cd-ok{border-color:#1d6b2f;color:#1d6b2f}.aviso{border:1px solid #999;padding:6px 8px;margin:8px 0;font-size:12px}' +
+  '.cj-fotos{display:flex;flex-wrap:wrap;gap:8px}.cj-fotos img{max-width:240px;max-height:240px}figure{margin:0}figcaption{font-size:11px;color:#555}.salto{page-break-before:always;break-before:page}.pie{margin-top:30px}' +
+  '@media print{body{margin:0}button{display:none}}';
+function ventanaImpresion(){
+  var w = window.open('', '_blank'); if (!w){ alert('El navegador ha bloqueado la ventana de impresión. Permite las ventanas emergentes para esta página.'); return null; }
+  w.document.write('<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>Preparando…</title><style>' + CSS_IMPRESION + '</style></head><body><p>Preparando el documento…</p></body></html>'); w.document.close();
+  return w;
+}
+function rellenarImpresion(w, titulo, cuerpo){
+  if (!w || w.closed) return;
+  w.document.open();
+  w.document.write('<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>' + esc(titulo) + '</title><style>' + CSS_IMPRESION + '</style></head><body>' + cuerpo + '</body></html>');
+  w.document.close(); w.focus();
+  var listo = function(){ setTimeout(function(){ try { w.print(); } catch (x){} }, 300); };
+  var imgs = [].slice.call(w.document.images), n = imgs.length; if (!n) return listo();
+  imgs.forEach(function(i){ if (i.complete) { if (--n === 0) listo(); } else i.onload = i.onerror = function(){ if (--n === 0) listo(); }; });
+}
+function cierreImpresion(e, fotos){ return '<h1>Cierre de caja · Trattoria Sant Arcangelo</h1>' + detalleHtml(e, fotos) + '<p class="pie">Firma del encargado: ______________________</p>'; }
 function imprimir(e, fotos){
-  var w = window.open('', '_blank'); if (!w){ alert('El navegador ha bloqueado la ventana de impresión. Permite las ventanas emergentes para esta página.'); return; }
-  w.document.write('<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>Cierre de caja ' + esc(fechaTxt(e.fecha)) + ' · Trattoria Sant Arcangelo</title><style>' +
-    'body{font-family:Arial,sans-serif;color:#111;margin:24px;font-size:13px}h1{font-size:20px;margin:0 0 4px}h3{font-size:14px;margin:16px 0 4px;border-bottom:2px solid #111}table{width:100%;border-collapse:collapse}td{padding:3px 0;border-bottom:1px solid #ddd}td.n{text-align:right;white-space:nowrap}tr.fuerte td{font-weight:bold}tr.total td{font-weight:bold;font-size:15px;border-top:2px solid #111}small{color:#555}.cj-fotos{display:flex;flex-wrap:wrap;gap:8px}.cj-fotos img{max-width:240px;max-height:240px}figure{margin:0}figcaption{font-size:11px;color:#555}' +
-    '</style></head><body><h1>Cierre de caja · Trattoria Sant Arcangelo</h1>' + detalleHtml(e, fotos) + '<p style="margin-top:30px">Firma del encargado: ______________________</p></body></html>');
-  w.document.close(); w.focus(); setTimeout(function(){ try { w.print(); } catch (x){} }, 400);
+  var w = ventanaImpresion(); if (!w) return;
+  rellenarImpresion(w, 'Cierre de caja ' + fechaTxt(e.fecha) + ' · Trattoria Sant Arcangelo', cierreImpresion(e, fotos));
 }
 
 /* ---------- Historial y encargados (socios y Jorge) ---------- */
@@ -1336,7 +1355,7 @@ async function soloCaja(app){
   try { await preparar(); } catch (e){ return fallo(e); }
   pintar();
 }
-return { montar: montar, acceso: acceso, soloCaja: soloCaja, sesion: sesionCaja, _C: function(){ return C; } };
+return { montar: montar, acceso: acceso, soloCaja: soloCaja, sesion: sesionCaja, ventanaImpresion: ventanaImpresion, rellenarImpresion: rellenarImpresion, cierreImpresion: cierreImpresion, _C: function(){ return C; } };
 })();
 
 </script>
@@ -1410,6 +1429,13 @@ function vistaDia(j){
     '<select class="sel" data-cdf="dia" aria-label="Jornada">' + jornadas().slice().reverse().map(function(d){ return '<option value="' + d + '"' + (d === j.dia ? ' selected' : '') + '>' + fLarga(d) + '</option>'; }).join('') + '</select>' +
     '<button type="button" class="flecha" data-cd="mover" data-v="1" aria-label="Día siguiente"' + (j.next ? '' : ' disabled') + '>›</button></div>' +
     '<p class="cd-estado">' + chip(j.estado) + (j.ag && j.cierres.length ? ' <span class="sub-txt">Diferencia total: <b>' + difTxt(j.dif) + '</b></span>' : '') + '</p></section>';
+  h += '<section class="bloque"><p class="cj-botones" style="margin:0"><button type="button" class="btn claro peq" data-cd="pdf-cuadre">Imprimir cuadre / PDF</button>' +
+    '<button type="button" class="btn claro peq" data-cd="pdf-cierre"' + (j.cierres.length ? '' : ' disabled') + '>Imprimir cierre de caja / PDF</button></p></section>';
+  return h + cuerpoDia(j, false);
+}
+/* Conciliación, ventas por centro y cierres del día: lo mismo en pantalla y en el PDF */
+function cuerpoDia(j, papel){
+  var h = '';
   // Conciliación
   h += '<section class="bloque"><h2>Ágora frente al cierre de caja</h2>';
   if (!j.ag) h += '<div class="aviso warn">Todavía no están los datos de Ágora de esta jornada. Se cargan solos cada mañana sobre las 06:20.</div>';
@@ -1434,7 +1460,7 @@ function vistaDia(j){
     h += '<section class="bloque"><h2>Cierres de caja de la jornada</h2><div class="cj-scroll"><table class="cj-tabla"><thead><tr><th>Turno</th><th>Encargado</th><th>Guardado</th><th class="n">Efectivo</th>' + fm.map(function(k){ return '<th class="n">' + esc(etiqueta(k)) + '</th>'; }).join('') + '<th class="n">Total</th></tr></thead><tbody>' +
       j.cierres.map(function(c){ var t = c.rec + fm.reduce(function(s, k){ return s + ((c.formas || {})[k] || 0); }, 0);
         return '<tr><td>' + esc(c.turno) + (c.dud ? ' <small>(fecha escrita: ' + esc(c.dud.split('-').reverse().join('/')) + ')</small>' : '') + '</td><td>' + esc(c.emp) + '</td><td>' + esc(c.hora) + '</td><td class="n">' + eur(c.rec) + '</td>' + fm.map(function(k){ return '<td class="n">' + eur((c.formas || {})[k] || 0) + '</td>'; }).join('') + '<td class="n"><b>' + eur(t) + '</b></td></tr>'; }).join('') +
-      '</tbody></table></div><p class="sub-txt" style="margin-top:8px">El detalle de cada cierre (arqueo, gastos, retiros y fotos) está en «Cierre de caja → Historial».</p></section>';
+      '</tbody></table></div>' + (papel ? '' : '<p class="sub-txt" style="margin-top:8px">El detalle de cada cierre (arqueo, gastos, retiros y fotos) sale con «Imprimir cierre de caja / PDF» y en «Cierre de caja → Historial».</p>') + '</section>';
   }
   return h;
 }
@@ -1511,6 +1537,29 @@ function csv(mes){
   filas.push(tot);
   XLSX.descargar('cuadre_trattoria_' + mes + '.xlsx', 'Cuadre ' + mes, filas, { totales: true });
 }
+/* ---------- Imprimir / PDF del día seleccionado ---------- */
+function pdfCuadre(){
+  var j = jornada(D.dia), w = window.CAJA.ventanaImpresion(); if (!w) return;
+  var cuerpo = '<h1>Cuadre de caja · Trattoria Sant Arcangelo</h1><p><b>' + esc(fLarga(j.dia)) + '</b> · ' + chip(j.estado) + (j.ag && j.cierres.length ? ' · Diferencia total: <b>' + difTxt(j.dif) + '</b>' : '') + '</p>' +
+    cuerpoDia(j, true) + '<p class="sub-txt pie">Impreso el ' + esc(new Date().toLocaleString('es-ES')) + ' por ' + esc(D.ses ? D.ses.nombre : '') + '.</p><p class="pie">Revisado por: ______________________</p>';
+  window.CAJA.rellenarImpresion(w, 'Cuadre de caja ' + j.dia.split('-').reverse().join('-') + ' · Trattoria', cuerpo);
+}
+async function pdfCierre(){
+  var j = jornada(D.dia); if (!j.cierres.length) return;
+  var w = window.CAJA.ventanaImpresion(); if (!w) return;
+  try {
+    var l = (await API.accion('caja', { op: 'listar' }, D.token)).cierres || [], usados = {}, partes = [];
+    for (var i = 0; i < j.cierres.length; i++){
+      var c = j.cierres[i];
+      var x = l.filter(function(y){ return !usados[y.ruta] && y.fecha === c.fecha && y.turno === c.turno && y.empleado === c.emp; })[0];
+      if (!x) continue; usados[x.ruta] = 1;
+      var r = await API.accion('caja', { op: 'leer', ruta: x.ruta }, D.token);
+      partes.push('<div' + (partes.length ? ' class="salto"' : '') + '>' + window.CAJA.cierreImpresion(r.cierre, r.fotos || {}) + '</div>');
+    }
+    if (!partes.length) throw new Error('No se han encontrado los cierres de este día en el historial.');
+    window.CAJA.rellenarImpresion(w, 'Cierre de caja ' + j.dia.split('-').reverse().join('-') + ' · Trattoria', partes.join(''));
+  } catch (e){ try { w.document.body.innerHTML = ''; var p = w.document.createElement('p'); p.textContent = 'No se ha podido preparar el cierre: ' + e.message; w.document.body.appendChild(p); } catch (x){} }
+}
 function alClic(ev){
   var b = ev.target.closest ? ev.target.closest('[data-cd]') : null; if (!b || b.disabled || !D.raiz.contains(b)) return;
   var a = b.dataset.cd, v = b.dataset.v;
@@ -1519,6 +1568,8 @@ function alClic(ev){
   if (a === 'recargar') return cargar();
   if (a === 'rellenar') return rellenar();
   if (a === 'csv') return csv(v);
+  if (a === 'pdf-cuadre') return pdfCuadre();
+  if (a === 'pdf-cierre') return pdfCierre();
   if (a === 'mover'){ var l = jornadas(), i = l.indexOf(D.dia) + Number(v); if (i >= 0 && i < l.length){ D.dia = l[i]; D.mes = D.dia.slice(0, 7); } pintar(); return; }
   if (a === 'ir'){ D.dia = v; pintar(); window.scrollTo(0, 0); return; }
 }
